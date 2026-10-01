@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Header } from '../components/Header';
 import { UploadArea } from '../components/UploadArea';
 import { ExtractionProgress } from '../components/ExtractionProgress';
@@ -8,9 +8,14 @@ import { ResultsTabs } from '../components/ResultsTabs';
 import { ExportButtons } from '../components/ExportButtons';
 import { uploadFile, startExtraction, getJobStatus, getJobResults } from '../api/extractionApi';
 import { ExtractionJobStatus, ExtractionResult, ExtractedElement } from '../types/extraction';
-import { AlertCircle, RefreshCw, FileText, FileCode } from 'lucide-react';
+import { AlertCircle, RefreshCw, FileText, FileCode, ShieldCheck } from 'lucide-react';
 
-export const Home: React.FC = () => {
+interface HomeProps {
+  onNavigateToOriginality?: (jobId: string, filename: string, extractedText?: string) => void;
+  onNavigate?: (view: 'extractor' | 'originality') => void;
+}
+
+export const Home: React.FC<HomeProps> = ({ onNavigateToOriginality, onNavigate }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<ExtractionJobStatus | null>(null);
@@ -134,7 +139,7 @@ export const Home: React.FC = () => {
     setIsSyncScroll((prev) => !prev);
   };
 
-  const handlePageChange = (index: number) => {
+  const handlePageChange = useCallback((index: number) => {
     setCurrentPageIndex(index);
     activeScroller.current = 'programmatic';
     if (scrollLockTimeout.current) clearTimeout(scrollLockTimeout.current);
@@ -144,7 +149,7 @@ export const Home: React.FC = () => {
 
     leftPageRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     rightPageRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
+  }, []);
 
   const syncScroll = (from: 'left' | 'right', to: 'right' | 'left') => {
     if (!result || !result.pages || result.pages.length === 0) return;
@@ -242,7 +247,7 @@ export const Home: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      <Header />
+      <Header activeView="extractor" onNavigate={onNavigate} />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         {/* Upload Section */}
@@ -272,7 +277,7 @@ export const Home: React.FC = () => {
         {/* Results Section */}
         {result && (
           <div className="space-y-6 animate-fadeIn">
-            {/* Top Toolbar / Reset & Export */}
+            {/* Top Toolbar / Reset & Export & Check Originality */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-slate-900 border border-slate-800 rounded-2xl shadow-lg">
               <div>
                 <h3 className="text-base font-bold text-white flex items-center space-x-2">
@@ -284,15 +289,27 @@ export const Home: React.FC = () => {
                 <p className="text-xs text-slate-400 mt-0.5">Extraction completed successfully.</p>
               </div>
 
-              <div className="flex items-center space-x-3">
+              <div className="flex flex-wrap items-center gap-2.5">
+                {/* PROMINENT CHECK ORIGINALITY BUTTON */}
+                <button
+                  type="button"
+                  onClick={() => onNavigateToOriginality?.(result.job_id, result.filename, result.reconstructed_text)}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white text-xs font-bold flex items-center space-x-2 transition shadow-lg shadow-emerald-950/40 border border-emerald-400/40 cursor-pointer transform hover:-translate-y-0.5 active:translate-y-0"
+                  title="Verify if extracted text accurately matches the original document"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-200" />
+                  <span>CHECK ORIGINALITY</span>
+                </button>
+
+                <ExportButtons jobId={result.job_id} />
+
                 <button
                   onClick={handleReset}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center space-x-1.5 transition border border-slate-700 cursor-pointer"
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center space-x-1.5 transition border border-slate-700 cursor-pointer"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   <span>New Extraction</span>
                 </button>
-                <ExportButtons jobId={result.job_id} />
               </div>
             </div>
 

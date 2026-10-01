@@ -11,20 +11,41 @@ from app.ocr.pp_structure_engine import PPStructureEngine
 from app.layout.overlap_detector import detect_overlaps
 from app.layout.duplicate_detector import detect_duplicates
 from app.layout.reading_order import sort_reading_order
+from app.layout.tag_classifier import TagClassifier
 from app.utils.normalization import is_ui_artifact, clean_ocr_text
 
 logger = logging.getLogger("pdf_extractor")
 
-MATH_PATTERNS = re.compile(r'[\u2200-\u22FF\u2A00-\u2AFF\u27C0-\u27EF\u0370-\u03FF=+\-×÷√∑∫∏≠≤≥±≈∞]')
+def is_pdf_tagged(doc: fitz.Document) -> bool:
+    try:
+        cat = doc.pdf_catalog()
+        if cat:
+            st_type, st_ref = doc.xref_get_key(cat, "StructTreeRoot")
+            if st_type != "null" and st_ref:
+                return True
+            mi_type, mi_val = doc.xref_get_key(cat, "MarkInfo")
+            if mi_type != "null" and "marked true" in mi_val.lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+MATH_PATTERNS = re.compile(r'[\u2200-\u22FF\u2A00-\u2AFF\u27C0-\u27EF×÷√∑∫∏≠≤≥±≈∞]')
 
 def is_math_or_formula(text: Optional[str]) -> bool:
     if not text:
         return False
-    # Check for math symbols, equation signs, LaTeX tokens
-    if MATH_PATTERNS.search(text) and ('=' in text or len(text.strip()) > 3):
+    t = text.strip()
+    # Check for LaTeX tokens
+    if any(token in t.lower() for token in ['\\frac', '\\sqrt', '\\sum', '\\int', 'mathtype']):
         return True
-    if any(token in text.lower() for token in ['\\frac', '\\sqrt', '\\sum', '\\int', 'mathtype', 'equation']):
+    # Check for genuine math operators
+    if MATH_PATTERNS.search(t):
         return True
+    # Mathematical equation with equals sign (excluding html/xml/comparison artifacts)
+    if '=' in t and not any(tag in t for tag in ['<', '>', '==', '!=', 'http']):
+        if re.search(r'\b[a-zA-Z]\s*=\s*[0-9a-zA-Z\+\-\*\/]', t):
+            return True
     return False
 
 class PDFExtractor:
@@ -46,6 +67,7 @@ class PDFExtractor:
     ) -> Dict[str, Any]:
         job_id = os.path.basename(temp_dir)
         doc = fitz.open(pdf_path)
+        doc_is_tagged = is_pdf_tagged(doc)
         pages_data: List[PageData] = []
         stats = ExtractionStatistics()
         total_pages = len(doc)
@@ -65,7 +87,7 @@ class PDFExtractor:
                     page_pct,
                     page_num,
                     total_pages,
-                    f"Processing Page {page_num} of {total_pages} (Extracting text, formulas & images)..."
+                    f"Processing Page {page_num} of {total_pages} (Extracting text, layout & structure)..."
                 )
 
             elements: List[ExtractedElement] = []
@@ -79,12 +101,78 @@ class PDFExtractor:
             page_img_path = os.path.join(temp_dir, page_img_filename)
             pix.save(page_img_path)
 
-            # Step 2 — Extract Native PDF Text
-            text_page = page.get_text("blocks")
+            # Step 2 — Extract Native PDF Text with Font & Layout Information
+            page_dict = page.get_text("dict")
+            blocks = page_dict.get("blocks", [])
+
+            # Compute median font size for this page to accurately detect headings vs body
+            page_font_sizes: List[float] = []
+            for b in blocks:
+                if b.get("type") == 0:
+                    for line in b.get("lines", []):
+                        for span in line.get("spans", []):
+                            t = span.get("text", "").strip()
+                            if t and len(t) >= 2:
+                                page_font_sizes.append(float(span.get("size", 11.0)))
+
+            median_body_size = TagClassifier.compute_median_font_size(page_font_sizes, fallback=11.0)
             total_native_chars = 0
-            for block in text_page:
-                x0, y0, x1, y1, text, block_no, block_type = block[:7]
-                text_clean = text.strip()
+
+            for b in blocks:
+                if b.get("type") != 0:
+                    continue
+
+                lines = b.get("lines", [])
+                block_lines_text = []
+                span_fonts = []
+                span_sizes = []
+                span_colors = []
+                span_bolds = []
+                span_italics = []
+
+                structured_lines = []
+                for line in lines:
+                    line_spans = line.get("spans", [])
+                    span_parts = []
+                    for s in line_spans:
+                        st = s.get("text", "")
+                        if st:
+                            if span_parts and not span_parts[-1].endswith(" ") and not st.startswith(" "):
+                                span_parts.append(" ")
+                            span_parts.append(st)
+                    line_str = "".join(span_parts).strip()
+                    if line_str:
+                        l_bbox = line.get("bbox", (0, 0, 0, 0))
+                        structured_lines.append((float(l_bbox[1]), float(l_bbox[0]), float(l_bbox[2]), line_str))
+                    for s in line_spans:
+                        s_text = s.get("text", "").strip()
+                        if s_text:
+                            s_font = s.get("font", "")
+                            s_size = float(s.get("size", 11.0))
+                            s_flags = int(s.get("flags", 0))
+                            s_color = int(s.get("color", 0))
+
+                            span_fonts.append(s_font)
+                            span_sizes.append(s_size)
+                            span_colors.append(s_color)
+                            is_b = bool((s_flags & 16) or ('bold' in s_font.lower()) or ('black' in s_font.lower()) or ('heavy' in s_font.lower()))
+                            is_i = bool((s_flags & 2) or ('italic' in s_font.lower()) or ('oblique' in s_font.lower()))
+                            span_bolds.append(is_b)
+                            span_italics.append(is_i)
+
+                # Assemble block lines, joining same-baseline spans (within 4pt)
+                merged_block_lines = []
+                for y0, x0, x1, l_txt in structured_lines:
+                    if merged_block_lines and abs(y0 - merged_block_lines[-1][0]) <= 4.0:
+                        prev_y0, prev_x0, prev_x1, prev_txt = merged_block_lines[-1]
+                        if (x0 - prev_x1) > 35 and not any(w in l_txt for w in ('Then', 'where', '=')):
+                            merged_block_lines.append((y0, x0, x1, l_txt))
+                        else:
+                            merged_block_lines[-1] = (prev_y0, prev_x0, max(prev_x1, x1), f"{prev_txt} {l_txt}")
+                    else:
+                        merged_block_lines.append((y0, x0, x1, l_txt))
+
+                text_clean = "\n".join(item[3] for item in merged_block_lines).strip()
                 if not text_clean:
                     continue
 
@@ -92,27 +180,64 @@ class PDFExtractor:
                 norm_b = text_clean.lower().replace('\n', ' ')
                 if ("exclusive use" in norm_b or "excl e use" in norm_b or "do not print" in norm_b or "do n print" in norm_b) and ("partnership" in norm_b or "ership" in norm_b or "idea" in norm_b):
                     continue
-                    
+
                 total_native_chars += len(text_clean)
-                bbox = [float(x0), float(y0), float(x1), float(y1)]
-                font_info = None
-                
-                is_formula = is_math_or_formula(text_clean)
-                elem_type = "formula" if is_formula else "text"
-                
+                bbox = [float(b["bbox"][0]), float(b["bbox"][1]), float(b["bbox"][2]), float(b["bbox"][3])]
+
+                dominant_font = max(set(span_fonts), key=span_fonts.count) if span_fonts else "Arial"
+                dominant_size = round(sum(span_sizes) / max(1, len(span_sizes)), 1) if span_sizes else median_body_size
+                dominant_bold = (span_bolds.count(True) > len(span_bolds) / 2) if span_bolds else False
+                dominant_italic = (span_italics.count(True) > len(span_italics) / 2) if span_italics else False
+                dominant_color_int = max(set(span_colors), key=span_colors.count) if span_colors else 0
+                dominant_color_hex = f"#{dominant_color_int:06x}"
+
+                font_info = FontInfo(
+                    name=dominant_font,
+                    size=dominant_size,
+                    color=dominant_color_hex,
+                    bold=dominant_bold,
+                    italic=dominant_italic,
+                    underline=False
+                )
+
+                classification = TagClassifier.classify_element(
+                    text=text_clean,
+                    bbox=bbox,
+                    font_info=font_info,
+                    page_width=page_width,
+                    page_height=page_height,
+                    median_body_size=median_body_size,
+                    doc_is_tagged=doc_is_tagged,
+                    source="native"
+                )
+
+                c_type = classification["content_type"]
                 elements.append(ExtractedElement(
                     id=f"native_p{page_num}_{elem_counter}",
                     page=page_num,
-                    type=elem_type,
+                    type=c_type,
+                    content_type=c_type,
+                    tag=classification["tag"],
+                    is_tagged=classification["is_tagged"],
+                    tag_source=classification["tag_source"],
+                    parameters=classification["parameters"],
                     source="native",
                     text=text_clean,
                     bbox=bbox,
                     font=font_info,
-                    block_num=block_no
+                    block_num=b.get("number", elem_counter),
+                    confidence=1.0
                 ))
                 elem_counter += 1
-                if is_formula:
+
+                if c_type == "formula":
                     stats.formulas_count += 1
+                elif c_type == "header":
+                    stats.headers_count += 1
+                elif c_type == "footer":
+                    stats.footers_count += 1
+                elif c_type == "footnote":
+                    stats.footnotes_count += 1
                 else:
                     stats.native_text_blocks += 1
 
@@ -124,14 +249,30 @@ class PDFExtractor:
                     tab_data = tab.extract()
                     headers = [str(c or '') for c in tab_data[0]] if tab_data else []
                     rows = [[str(c or '') for c in r] for r in tab_data[1:]] if len(tab_data) > 1 else []
+
+                    tbl_classification = TagClassifier.classify_element(
+                        is_table=True,
+                        table_rows=rows,
+                        table_headers=headers,
+                        bbox=tab_bbox,
+                        doc_is_tagged=doc_is_tagged,
+                        source="native"
+                    )
+
                     elements.append(ExtractedElement(
                         id=f"table_p{page_num}_{t_idx+1}",
                         page=page_num,
                         type="table",
+                        content_type="table",
+                        tag="Table",
+                        is_tagged=tbl_classification["is_tagged"],
+                        tag_source=tbl_classification["tag_source"],
+                        parameters=tbl_classification["parameters"],
                         source="native",
                         bbox=tab_bbox,
                         headers=headers,
-                        rows=rows
+                        rows=rows,
+                        confidence=1.0
                     ))
                     elem_counter += 1
                     stats.tables_count += 1
@@ -168,17 +309,37 @@ class PDFExtractor:
                 for rect_info in img_rects:
                     img_bbox = [float(rect_info.x0), float(rect_info.y0), float(rect_info.x1), float(rect_info.y1)]
                     img_id = f"img_p{page_num}_{img_idx+1}"
-                    
+
+                    img_classification = TagClassifier.classify_element(
+                        is_image=True,
+                        bbox=img_bbox,
+                        doc_is_tagged=doc_is_tagged,
+                        source="native",
+                        image_meta={
+                            "image_id": img_id,
+                            "image_path": img_url,
+                            "width": int(rect_info.width),
+                            "height": int(rect_info.height),
+                            "format": image_ext if 'image_ext' in locals() else "png"
+                        }
+                    )
+
                     elements.append(ExtractedElement(
                         id=f"image_elem_p{page_num}_{elem_counter}",
                         page=page_num,
                         type="image",
+                        content_type="image",
+                        tag="Figure",
+                        is_tagged=True,
+                        tag_source="native",
+                        parameters=img_classification["parameters"],
                         source="native",
                         bbox=img_bbox,
                         image_id=img_id,
                         image_path=img_url,
                         width=int(rect_info.width),
-                        height=int(rect_info.height)
+                        height=int(rect_info.height),
+                        confidence=1.0
                     ))
                     elem_counter += 1
                     stats.images_count += 1
@@ -202,25 +363,38 @@ class PDFExtractor:
                     scaled_bbox = [raw_bbox[0] * scale, raw_bbox[1] * scale, raw_bbox[2] * scale, raw_bbox[3] * scale]
                     
                     ocr_text = ocr_res.get("text", "")
-                    if is_ui_artifact(ocr_text, scaled_bbox):
+                    ocr_conf = ocr_res.get("confidence")
+                    if is_ui_artifact(ocr_text, scaled_bbox, confidence=ocr_conf):
                         continue
                     ocr_text = clean_ocr_text(ocr_text)
-                    if not ocr_text:
+                    if not ocr_text or is_ui_artifact(ocr_text, scaled_bbox, confidence=ocr_conf):
                         continue
-                    is_formula = is_math_or_formula(ocr_text)
-                    elem_type = "formula" if is_formula else "image_text"
+
+                    ocr_classification = TagClassifier.classify_element(
+                        text=ocr_text,
+                        bbox=scaled_bbox,
+                        page_width=page_width,
+                        page_height=page_height,
+                        doc_is_tagged=doc_is_tagged,
+                        source="ocr"
+                    )
 
                     elements.append(ExtractedElement(
                         id=f"ocr_p{page_num}_{elem_counter}",
                         page=page_num,
-                        type=elem_type,
+                        type=ocr_classification["content_type"],
+                        content_type=ocr_classification["content_type"],
+                        tag=ocr_classification["tag"],
+                        is_tagged=False,
+                        tag_source="ocr",
+                        parameters=ocr_classification["parameters"],
                         source="ocr",
                         text=ocr_text,
                         confidence=ocr_res.get("confidence"),
                         bbox=scaled_bbox
                     ))
                     elem_counter += 1
-                    if is_formula:
+                    if ocr_classification["content_type"] == "formula":
                         stats.formulas_count += 1
                     stats.ocr_text_blocks += 1
             else:
@@ -229,7 +403,6 @@ class PDFExtractor:
                     try:
                         img_path_for_ocr = s_img["path"]
                         scale_m = 1.0
-                        # Auto-upscale small equation/image crops so OCR text detector does not miss them
                         try:
                             with Image.open(s_img["path"]) as test_im:
                                 w_im, h_im = test_im.size
@@ -257,39 +430,52 @@ class PDFExtractor:
                             if not crop_text:
                                 continue
                             c_bbox = crop_res.get("bbox", [0, 0, 0, 0])
-                            if is_ui_artifact(crop_text, c_bbox):
+                            crop_conf = crop_res.get("confidence")
+                            if is_ui_artifact(crop_text, c_bbox, confidence=crop_conf):
                                 continue
                             crop_text = clean_ocr_text(crop_text)
-                            if not crop_text:
+                            if not crop_text or is_ui_artifact(crop_text, c_bbox, confidence=crop_conf):
                                 continue
-                            # Map crop coordinates back to page coordinate space
+
                             mapped_bbox = [
                                 img_bbox[0] + (c_bbox[0] / crop_w) * iw,
                                 img_bbox[1] + (c_bbox[1] / crop_h) * ih,
                                 img_bbox[0] + (c_bbox[2] / crop_w) * iw,
                                 img_bbox[1] + (c_bbox[3] / crop_h) * ih
                             ]
-                            is_formula = is_math_or_formula(crop_text)
-                            elem_type = "formula" if is_formula else "image_text"
+
+                            crop_classification = TagClassifier.classify_element(
+                                text=crop_text,
+                                bbox=mapped_bbox,
+                                page_width=page_width,
+                                page_height=page_height,
+                                doc_is_tagged=doc_is_tagged,
+                                source="ocr"
+                            )
 
                             elements.append(ExtractedElement(
                                 id=f"ocr_img_p{page_num}_{elem_counter}",
                                 page=page_num,
-                                type=elem_type,
+                                type=crop_classification["content_type"],
+                                content_type=crop_classification["content_type"],
+                                tag=crop_classification["tag"],
+                                is_tagged=False,
+                                tag_source="ocr",
+                                parameters=crop_classification["parameters"],
                                 source="ocr",
                                 text=crop_text,
                                 confidence=crop_res.get("confidence"),
                                 bbox=mapped_bbox
                             ))
                             elem_counter += 1
-                            if is_formula:
+                            if crop_classification["content_type"] == "formula":
                                 stats.formulas_count += 1
                             stats.ocr_text_blocks += 1
                     except Exception as ex_crop:
                         logger.debug(f"Image crop OCR note: {ex_crop}")
 
             # Step 5 — PP-Structure Layout Engine (for scanned pages or unformatted documents)
-            if is_scanned_page or stats.tables_count == 0:
+            if is_scanned_page:
                 try:
                     structure_results = self.structure_engine.analyze_structure(page_img_path, page_num=page_num)
                     for struct_res in structure_results:
@@ -302,18 +488,32 @@ class PDFExtractor:
                             st_type = "formula"
                             stats.formulas_count += 1
                         elif st_type == "table":
-                            # Only add if not already captured natively
-                            if is_scanned_page:
-                                stats.tables_count += 1
-                            else:
-                                continue
+                            stats.tables_count += 1
+                        elif st_type == "figure":
+                            continue
                         else:
                             stats.pp_structure_regions += 1
+
+                        pp_classification = TagClassifier.classify_element(
+                            text=struct_res.get("text"),
+                            bbox=scaled_bbox,
+                            is_table=(st_type == "table"),
+                            is_formula=(st_type == "formula"),
+                            page_width=page_width,
+                            page_height=page_height,
+                            doc_is_tagged=doc_is_tagged,
+                            source="pp_structure"
+                        )
 
                         elements.append(ExtractedElement(
                             id=f"pp_p{page_num}_{elem_counter}",
                             page=page_num,
-                            type=st_type,
+                            type=pp_classification["content_type"],
+                            content_type=pp_classification["content_type"],
+                            tag=pp_classification["tag"],
+                            is_tagged=False,
+                            tag_source="pp_structure",
+                            parameters=pp_classification["parameters"],
                             source="pp_structure",
                             text=struct_res.get("text"),
                             bbox=scaled_bbox
@@ -321,6 +521,43 @@ class PDFExtractor:
                         elem_counter += 1
                 except Exception as ex_struct:
                     logger.debug(f"PPStructure layout note: {ex_struct}")
+            elif stats.tables_count == 0:
+                try:
+                    structure_results = self.structure_engine.analyze_structure(page_img_path, page_num=page_num)
+                    for struct_res in structure_results:
+                        st_type = struct_res.get("type", "").lower()
+                        if st_type == "table":
+                            raw_bbox = struct_res.get("bbox", [0, 0, 0, 0])
+                            scale = 72.0 / self.render_dpi
+                            scaled_bbox = [raw_bbox[0] * scale, raw_bbox[1] * scale, raw_bbox[2] * scale, raw_bbox[3] * scale]
+
+                            pp_tbl_classification = TagClassifier.classify_element(
+                                text=struct_res.get("text"),
+                                bbox=scaled_bbox,
+                                is_table=True,
+                                page_width=page_width,
+                                page_height=page_height,
+                                doc_is_tagged=doc_is_tagged,
+                                source="pp_structure"
+                            )
+
+                            elements.append(ExtractedElement(
+                                id=f"pp_tab_p{page_num}_{elem_counter}",
+                                page=page_num,
+                                type="table",
+                                content_type="table",
+                                tag="Table",
+                                is_tagged=False,
+                                tag_source="pp_structure",
+                                parameters=pp_tbl_classification["parameters"],
+                                source="pp_structure",
+                                text=struct_res.get("text"),
+                                bbox=scaled_bbox
+                            ))
+                            elem_counter += 1
+                            stats.tables_count += 1
+                except Exception as ex_struct:
+                    logger.debug(f"PPStructure table check note: {ex_struct}")
 
             # Step 6 — Overlap Detection & Classification
             elements = detect_overlaps(elements)
@@ -342,7 +579,12 @@ class PDFExtractor:
 
         doc.close()
 
+        all_extracted_elements = [elem for p in pages_data for elem in p.elements]
+        tagging_summary = TagClassifier.build_tagging_summary(all_extracted_elements, doc_is_tagged=doc_is_tagged)
+
         return {
             "pages": pages_data,
-            "statistics": stats
+            "statistics": stats,
+            "is_tagged_document": doc_is_tagged,
+            "tagging_summary": tagging_summary
         }

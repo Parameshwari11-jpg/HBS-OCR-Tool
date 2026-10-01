@@ -1,6 +1,21 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { ExtractionResult, ExtractedElement, PageData } from '../types/extraction';
-import { FileText, ScanText, Image, Table, GitFork, AlignLeft, Copy, Check, Info, Link2, FileCode } from 'lucide-react';
+import {
+  FileText,
+  ScanText,
+  Image,
+  Table,
+  GitFork,
+  AlignLeft,
+  Copy,
+  Check,
+  Info,
+  Link2,
+  FileCode,
+  ChevronLeft,
+  ChevronRight,
+  Layers,
+} from 'lucide-react';
 
 interface ResultsTabsProps {
   result: ExtractionResult;
@@ -33,8 +48,14 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
   pageRefsExternal,
 }) => {
   const [activeTab, setActiveTab] = useState<'all' | 'native' | 'ocr' | 'images' | 'tables' | 'structure'>('all');
+  const [allTextViewMode, setAllTextViewMode] = useState<'cards' | 'plain'>('plain');
   const [copiedAll, setCopiedAll] = useState(false);
   const [copiedPage, setCopiedPage] = useState<number | null>(null);
+
+  // Automatically default to Plain Text whenever a new extraction result is loaded
+  useEffect(() => {
+    setAllTextViewMode('plain');
+  }, [result.job_id]);
 
   const localContainerRef = useRef<HTMLDivElement>(null);
   const containerRef = containerRefExternal || localContainerRef;
@@ -52,8 +73,18 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
 
   // Parse reconstructed_text into per-page sections matching result.pages
   const pageSections = useMemo((): PageSection[] => {
+    const getFallbackText = (p: PageData) => {
+      return p.elements
+        .filter((e) => !e.possible_duplicate && e.type !== 'image' && e.text && e.text.trim())
+        .map((e) => e.text!.trim())
+        .join('\n\n');
+    };
+
     if (!result.reconstructed_text) {
-      return result.pages.map((p) => ({ pageNumber: p.page, text: '' }));
+      return result.pages.map((p) => ({
+        pageNumber: p.page,
+        text: getFallbackText(p),
+      }));
     }
 
     const regex = /--- Page (\d+) ---([\s\S]*?)(?=(?:--- Page \d+ ---|$))/g;
@@ -67,16 +98,41 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
     if (sectionsMap.size > 0) {
       return result.pages.map((p) => ({
         pageNumber: p.page,
-        text: sectionsMap.get(p.page) ?? '',
+        text: sectionsMap.get(p.page) || getFallbackText(p),
       }));
     }
 
     // Fallback if no page delimiters present
     return result.pages.map((p, idx) => ({
       pageNumber: p.page,
-      text: idx === 0 ? result.reconstructed_text.trim() : '',
+      text: idx === 0 ? result.reconstructed_text.trim() : getFallbackText(p),
     }));
   }, [result.reconstructed_text, result.pages]);
+
+  // Sorted reading-order elements for each page (used for interactive text navigation)
+  const pageReadingOrderElements = useMemo(() => {
+    return result.pages.map((p) => {
+      let valid = p.elements.filter(
+        (e) => !e.possible_duplicate && e.type !== 'image' && e.text && e.text.trim()
+      );
+      if (valid.length === 0) {
+        valid = p.elements.filter(
+          (e) => e.type !== 'image' && e.text && e.text.trim()
+        );
+      }
+      return valid.sort((a, b) => {
+        const roA = a.reading_order && a.reading_order > 0 ? a.reading_order : 99999;
+        const roB = b.reading_order && b.reading_order > 0 ? b.reading_order : 99999;
+        if (roA !== roB) return roA - roB;
+        const yA = a.bbox ? a.bbox[1] : 99999;
+        const yB = b.bbox ? b.bbox[1] : 99999;
+        if (yA !== yB) return yA - yB;
+        const xA = a.bbox ? a.bbox[0] : 99999;
+        const xB = b.bbox ? b.bbox[0] : 99999;
+        return xA - xB;
+      });
+    });
+  }, [result.pages]);
 
   // When active tab changes, auto-align to current page
   useEffect(() => {
@@ -84,6 +140,16 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
       pageRefs.current[currentPageIndex]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }, [activeTab]);
+
+  // Scroll element card into view in Tab 1 when selected from document viewer
+  useEffect(() => {
+    if (selectedElementId && activeTab === 'all' && allTextViewMode === 'cards') {
+      const cardEl = document.getElementById(`elem-card-${selectedElementId}`);
+      if (cardEl) {
+        cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+  }, [selectedElementId, activeTab, allTextViewMode]);
 
   const handleCopyAll = () => {
     navigator.clipboard.writeText(result.reconstructed_text);
@@ -147,19 +213,36 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
           </div>
           {/* Page Switcher */}
           {result.pages.length > 1 && (
-            <div className="flex items-center space-x-1.5 text-xs">
-              <span className="text-slate-400 text-[11px] font-medium">Page:</span>
+            <div className="flex items-center space-x-1 text-xs bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => onPageChange?.(Math.max(0, currentPageIndex - 1))}
+                disabled={currentPageIndex <= 0}
+                title="Previous Page"
+                className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
               <select
                 value={currentPageIndex}
                 onChange={(e) => onPageChange?.(Number(e.target.value))}
-                className="bg-slate-900 border border-slate-700 text-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 cursor-pointer"
+                className="bg-transparent text-slate-200 text-xs px-1.5 py-0.5 focus:outline-none cursor-pointer font-medium"
               >
                 {result.pages.map((p, idx) => (
-                  <option key={idx} value={idx}>
-                    {p.page} / {result.pages.length}
+                  <option key={idx} value={idx} className="bg-slate-900 text-slate-200">
+                    Page {p.page} of {result.pages.length}
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                onClick={() => onPageChange?.(Math.min(result.pages.length - 1, currentPageIndex + 1))}
+                disabled={currentPageIndex >= result.pages.length - 1}
+                title="Next Page"
+                className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
 
@@ -190,50 +273,169 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
         {/* Tab 1: All Text (Page-by-page aligned) */}
         {activeTab === 'all' && (
           <div className="space-y-4">
-            <div className="flex justify-between items-center bg-slate-950 p-3 rounded-xl border border-slate-800 sticky top-0 z-10 shadow-md">
+            <div className="flex flex-wrap justify-between items-center bg-slate-950 p-3 rounded-xl border border-slate-800 sticky top-0 z-10 shadow-md gap-2">
               <div className="flex items-center space-x-2">
-                <span className="text-xs text-slate-300 font-semibold">Reconstructed Text in Reading Order</span>
-                <span className="text-[10px] text-slate-500 font-mono">({result.pages.length} {result.pages.length === 1 ? 'page' : 'pages'})</span>
+                <span className="text-xs text-slate-200 font-bold">Reconstructed Text</span>
+                <span className="text-[10px] text-slate-500 font-mono">
+                  ({result.pages.length} {result.pages.length === 1 ? 'page' : 'pages'})
+                </span>
+                <span className="hidden sm:inline-block text-[11px] text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                  {allTextViewMode === 'plain'
+                    ? 'Plain Text View — Click Interactive to inspect element tags'
+                    : 'Interactive View — Click any paragraph to jump to original document'}
+                </span>
               </div>
-              <button
-                onClick={handleCopyAll}
-                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg font-medium flex items-center space-x-1.5 transition cursor-pointer"
-              >
-                {copiedAll ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedAll ? 'Copied All!' : 'Copy All Text'}</span>
-              </button>
-            </div>
-
-            {pageSections.map((sec, idx) => (
-              <div
-                key={sec.pageNumber}
-                ref={(el) => {
-                  if (pageRefs.current) {
-                    pageRefs.current[idx] = el;
-                  }
-                }}
-                className={`bg-slate-950 rounded-xl border transition-all duration-200 overflow-hidden ${
-                  currentPageIndex === idx ? 'border-indigo-500/50 shadow-md shadow-indigo-500/10' : 'border-slate-800/80'
-                }`}
-              >
-                <div className="bg-slate-900/90 border-b border-slate-800/80 px-4 py-2.5 flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <span className={`w-2.5 h-2.5 rounded-full ${currentPageIndex === idx ? 'bg-indigo-400 animate-pulse' : 'bg-slate-500'}`}></span>
-                    <span className="text-xs font-bold text-slate-200">Page {sec.pageNumber}</span>
-                  </div>
+              <div className="flex items-center space-x-2">
+                {/* View Mode Toggle: Plain Text vs Interactive Cards */}
+                <div className="flex items-center space-x-1 bg-slate-900 border border-slate-800 p-0.5 rounded-lg text-xs">
                   <button
-                    onClick={() => handleCopyPage(sec.text, sec.pageNumber)}
-                    className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center space-x-1 transition cursor-pointer px-2 py-0.5 rounded bg-slate-800/60 hover:bg-slate-800"
+                    type="button"
+                    onClick={() => setAllTextViewMode('plain')}
+                    className={`px-2.5 py-1 rounded font-medium transition cursor-pointer flex items-center space-x-1.5 ${
+                      allTextViewMode === 'plain'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Plain text view: continuous text for easy reading and copying"
                   >
-                    {copiedPage === sec.pageNumber ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedPage === sec.pageNumber ? 'Copied' : 'Copy Page'}</span>
+                    <AlignLeft className="w-3.5 h-3.5" />
+                    <span>Plain Text</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAllTextViewMode('cards')}
+                    className={`px-2.5 py-1 rounded font-medium transition cursor-pointer flex items-center space-x-1.5 ${
+                      allTextViewMode === 'cards'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Interactive view: Click any paragraph to locate in the original document"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Interactive</span>
                   </button>
                 </div>
-                <pre className="p-4 text-slate-200 font-mono text-xs whitespace-pre-wrap leading-relaxed overflow-x-auto selection:bg-indigo-500/30">
-                  {sec.text ? sec.text : <span className="text-slate-500 italic">No text extracted on this page.</span>}
-                </pre>
+
+                <button
+                  type="button"
+                  onClick={handleCopyAll}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg font-medium flex items-center space-x-1.5 transition cursor-pointer"
+                >
+                  {copiedAll ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedAll ? 'Copied All!' : 'Copy All Text'}</span>
+                </button>
               </div>
-            ))}
+            </div>
+
+            {pageSections.map((sec, idx) => {
+              const pageElems = pageReadingOrderElements[idx] || [];
+              const hasElements = pageElems.length > 0;
+              const isCurrentPage = currentPageIndex === idx;
+
+              return (
+                <div
+                  key={sec.pageNumber}
+                  ref={(el) => {
+                    if (pageRefs.current) {
+                      pageRefs.current[idx] = el;
+                    }
+                  }}
+                  className={`bg-slate-950 rounded-xl border transition-all duration-200 overflow-hidden ${
+                    isCurrentPage ? 'border-indigo-500/50 shadow-md shadow-indigo-500/10' : 'border-slate-800/80'
+                  }`}
+                >
+                  <div className="bg-slate-900/90 border-b border-slate-800/80 px-4 py-2.5 flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${isCurrentPage ? 'bg-indigo-400 animate-pulse' : 'bg-slate-500'}`}></span>
+                      <span className="text-xs font-bold text-slate-200">Page {sec.pageNumber}</span>
+                      {hasElements && (
+                        <span className="text-[10px] text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-full">
+                          {pageElems.length} {pageElems.length === 1 ? 'block' : 'blocks'}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyPage(sec.text, sec.pageNumber)}
+                      className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center space-x-1 transition cursor-pointer px-2 py-0.5 rounded bg-slate-800/60 hover:bg-slate-800"
+                    >
+                      {copiedPage === sec.pageNumber ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedPage === sec.pageNumber ? 'Copied' : 'Copy Page'}</span>
+                    </button>
+                  </div>
+
+                  {allTextViewMode === 'cards' && hasElements ? (
+                    <div className="p-3 space-y-2">
+                      {pageElems.map((elem, elemIdx) => {
+                        const isSelected = selectedElementId === elem.id;
+                        return (
+                          <div
+                            key={elem.id || `${idx}-${elemIdx}`}
+                            id={`elem-card-${elem.id}`}
+                            onClick={() => {
+                              if (onPageChange && currentPageIndex !== idx) {
+                                onPageChange(idx);
+                              }
+                              onSelectElement(elem);
+                            }}
+                            className={`p-3 rounded-xl border transition-all cursor-pointer group text-left ${
+                              isSelected
+                                ? 'bg-rose-500/15 border-rose-500/80 text-rose-50 shadow-md ring-1 ring-rose-500/50'
+                                : 'bg-slate-900/60 border-slate-800/80 hover:border-indigo-500/60 hover:bg-slate-900/90 text-slate-200'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between text-[11px] mb-1.5 opacity-75 group-hover:opacity-100">
+                              <div className="flex items-center space-x-2">
+                                <span
+                                  className={`font-mono text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                    isSelected ? 'bg-rose-500/30 text-rose-300' : 'bg-slate-800 text-slate-400'
+                                  }`}
+                                >
+                                  #{elem.reading_order ?? elemIdx + 1}
+                                </span>
+                                {elem.tag && (
+                                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                                    &lt;{elem.tag}&gt;
+                                  </span>
+                                )}
+                                <span className="text-[11px] text-slate-400 capitalize">
+                                  {elem.content_type || elem.type || 'text'} • {elem.source === 'ocr' ? 'OCR' : elem.source === 'pp_structure' ? 'Structure' : 'Native'}
+                                </span>
+                                <span className={`text-[9px] px-1 rounded ${elem.is_tagged ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-500'}`}>
+                                  {elem.is_tagged ? 'Tagged' : 'Inferred'}
+                                </span>
+                                {elem.confidence !== undefined && (
+                                  <span className="text-[10px] font-mono text-emerald-400">
+                                    {(elem.confidence > 1 ? elem.confidence : elem.confidence * 100).toFixed(0)}%
+                                  </span>
+                                )}
+                              </div>
+                              <span
+                                className={`text-[10px] flex items-center space-x-0.5 ${
+                                  isSelected ? 'text-rose-400 font-semibold' : 'text-indigo-400 group-hover:underline'
+                                }`}
+                              >
+                                <span>{isSelected ? 'Viewing in document' : `Locate on page ${sec.pageNumber}`}</span>
+                                <ChevronRight className="w-2.5 h-2.5" />
+                              </span>
+                            </div>
+                            <p className="text-xs font-sans leading-relaxed whitespace-pre-wrap select-text">
+                              {elem.text}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-slate-950">
+                      <div className="text-slate-100 font-sans text-xs sm:text-sm whitespace-pre-wrap leading-relaxed select-text font-normal selection:bg-indigo-500/30">
+                        {sec.text ? sec.text : <span className="text-slate-500 italic">No text extracted on this page.</span>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -500,6 +702,30 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
         {/* Tab 6: Document Structure Tree (Grouped by Page) */}
         {activeTab === 'structure' && (
           <div className="space-y-4 font-mono text-xs">
+            {result.tagging_summary && (
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl flex flex-wrap items-center justify-between text-xs gap-2 font-sans">
+                <div className="flex items-center space-x-2">
+                  <span className="text-slate-400 font-medium">Document Tag Status:</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full font-bold uppercase text-[10px] ${
+                      result.tagging_summary.document_tag_status === 'tagged'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : result.tagging_summary.document_tag_status === 'partially_tagged'
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        : 'bg-slate-800 text-slate-300 border border-slate-700'
+                    }`}
+                  >
+                    {result.tagging_summary.document_tag_status}
+                  </span>
+                </div>
+                <div className="flex items-center space-x-3 text-[11px] text-slate-400">
+                  <span>Tagged: <strong className="text-emerald-400">{result.tagging_summary.tagged_elements_count}</strong></span>
+                  <span>Inferred: <strong className="text-indigo-400">{result.tagging_summary.inferred_elements_count}</strong></span>
+                  <span>Total Elements: <strong className="text-slate-200">{result.tagging_summary.total_elements}</strong></span>
+                </div>
+              </div>
+            )}
+
             {result.pages.map((p, pageIdx) => (
               <div
                 key={p.page}
@@ -522,9 +748,12 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
                       }`}
                     >
                       <div className="flex items-center space-x-2 truncate">
-                        <span className="font-semibold text-slate-400">[{elem.type}]</span>
-                        <span className="text-slate-500">({elem.source})</span>
-                        <span className="truncate">{elem.text ? `"${elem.text.slice(0, 40)}..."` : ''}</span>
+                        <span className="font-bold text-indigo-400 font-mono">[{elem.tag || elem.content_type || elem.type}]</span>
+                        <span className="text-slate-500">({elem.content_type || elem.type})</span>
+                        <span className={`text-[9px] px-1 rounded ${elem.is_tagged ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}>
+                          {elem.is_tagged ? 'TAGGED' : 'INFERRED'}
+                        </span>
+                        <span className="truncate font-sans">{elem.text ? `"${elem.text.slice(0, 40)}..."` : ''}</span>
                       </div>
                       <span className="text-[10px] text-slate-600">Order: {elem.reading_order}</span>
                     </div>

@@ -45,12 +45,30 @@ def calculate_text_similarity(str1: str, str2: str) -> float:
         
     return jaccard
 
-def is_ui_artifact(text: Optional[str], bbox: Optional[List[float]] = None) -> bool:
+WINDOW_CTRL_PATTERN = re.compile(
+    r'^[\-_—–\s]*([xX✕✖×]|(?:[口□◻oO0\[\]\(\)\-_—–\s]+[xX✕✖×]))[\-_—–\s]*$'
+)
+
+DROPDOWN_ARROW_PATTERN = re.compile(
+    r'^[|\[\(]?\s*([vV▼▾▽▲△▴u\^Aa]|v\.|V\.|a\.|A\.)\s*[|\]\)]?$'
+)
+
+CHECKBOX_GLYPH_PATTERN = re.compile(
+    r'^(?:\[\s*\]|\(\s*\)|[☐☑☒■□●○✓✔√•·\-_—–])$'
+)
+
+def is_ui_artifact(
+    text: Optional[str],
+    bbox: Optional[List[float]] = None,
+    confidence: Optional[float] = None
+) -> bool:
     """
     Identifies UI control artifacts such as:
-    - Dropdown combobox arrow buttons ('v', 'V', 'A', 'a', '^', '▼', '▾', '▽', etc. in small square boxes)
-    - Window close buttons ('X', 'x' in corner/small square boxes)
-    - Checkboxes / radio buttons / scrollbar arrows / isolated tiny punctuation noise
+    - Dropdown combobox arrow buttons ('v', 'V', '^', '▼', '▾', '▽', etc.)
+    - Drop-up / scrollbar up-arrow buttons ('A', 'a', '^', '▲', '△', etc. in small button boxes)
+    - Window caption/close buttons ('_ x', '_x', 'X', 'x', '- x', '— x', etc.)
+    - Standalone checkboxes, radio buttons, ticks, and bullet noise
+    - Low-confidence OCR noise
     Returns True if the item is a UI artifact and should NOT be treated as document text.
     """
     if not text:
@@ -59,6 +77,14 @@ def is_ui_artifact(text: Optional[str], bbox: Optional[List[float]] = None) -> b
     raw_t = text.strip()
     if not raw_t:
         return True
+
+    conf_norm: Optional[float] = None
+    if confidence is not None:
+        try:
+            c = float(confidence)
+            conf_norm = c / 100.0 if c > 1.0 else c
+        except (ValueError, TypeError):
+            pass
 
     w = 999.0
     h = 999.0
@@ -71,55 +97,124 @@ def is_ui_artifact(text: Optional[str], bbox: Optional[List[float]] = None) -> b
         ar = w / max(0.1, h)
         box_area = w * h
 
-    # 1. Dropdown combo box arrow buttons (often detected as 'V', 'v', 'A', 'a', '^', '▼', '▾', '▽', 'u')
-    # Typical dimensions in UI screenshots: 8x8 to 22x22 pixels, aspect ratio 0.6 - 1.6
-    if raw_t in ('v', 'V', 'A', 'a', '^', '▼', '▾', '▽', '▲', '△', '▴', 'u', 'v.', 'V.', 'a.'):
-        if (w <= 28 and h <= 28) or (box_area <= 650 and 0.6 <= ar <= 1.6):
+    # 1. Very low confidence noise across the board (< 0.40)
+    if conf_norm is not None and conf_norm < 0.40:
+        return True
+
+    # 2. Window control buttons: minimize, maximize, close
+    # Matches '_ x', '_x', '_ X', '- x', '— x', '_ [] x', standalone 'x'/'X'
+    if WINDOW_CTRL_PATTERN.match(raw_t):
+        # Multi-char caption button like '_ x', '- x' is always a window UI control
+        if len(raw_t) > 1:
+            return True
+        # Standalone 'x', 'X', '×': in image OCR, standalone single letter X is close button/checkbox
+        if raw_t.lower() in ('x', '×', '✕', '✖'):
+            if (w <= 60 and h <= 60) or (0.5 <= ar <= 1.8 and box_area <= 3600):
+                return True
+            if conf_norm is not None and conf_norm < 0.85:
+                return True
+
+    # 3. Dropdown combobox and drop-up/scroll-up arrow buttons ('v', 'V', 'A', 'a', '^', '▼', etc.)
+    if DROPDOWN_ARROW_PATTERN.match(raw_t):
+        # For 'A' or 'a' (drop-up arrow / scroll-up / spin-up button in UI forms):
+        # Wisely check that it is a small button icon (e.g. 8x10 px in scrollbars / spin controls)
+        if raw_t in ('A', 'a', 'A.', 'a.'):
+            if (w <= 28 and h <= 28) and (0.5 <= ar <= 1.6) and box_area <= 650:
+                return True
+        else:
+            # For 'v', 'V', '▼', '^', etc. (dropdown arrows)
+            if (w <= 60 and h <= 60) or (box_area <= 3600 and 0.5 <= ar <= 2.0):
+                return True
+            if raw_t.lower() in ('v', 'v.'):
+                # In English text, standalone 'v' or 'V' is never an isolated word
+                return True
+
+    # 4. Checkbox / radio button / bullet standalone glyphs
+    if CHECKBOX_GLYPH_PATTERN.match(raw_t):
+        return True
+
+    # Standalone '0' or 'o' or 'O' in a small square box (empty checkbox / radio button)
+    if raw_t in ('0', 'o', 'O') and (w <= 36 and h <= 36 and 0.65 <= ar <= 1.5):
+        return True
+
+    # Standalone '1' or 'l' or '|' (checkbox tick / cursor noise)
+    if raw_t in ('1', 'l', '|') and (w <= 30 and h <= 30):
+        # A checkmark misdetected as '1' has square-ish aspect ratio (ar >= 0.55), whereas real digit '1' has ar ~ 0.3
+        if ar >= 0.55 or (conf_norm is not None and conf_norm < 0.85):
             return True
 
-    # Standalone 'v' or 'V' of modest size (height/width <= 32)
-    # In standard English, standalone 'v' or 'V' does not exist as an isolated word in images
-    if raw_t.lower() == 'v' and w <= 32 and h <= 32:
-        return True
-
-    # 2. Window close button 'X' or 'x' in a small square box
-    if raw_t.lower() == 'x' and w <= 26 and h <= 26 and 0.7 <= ar <= 1.5:
-        return True
-
-    # 3. Tiny isolated noise glyphs (<= 18x18 pixels)
-    if len(raw_t) == 1 and w <= 18 and h <= 18 and raw_t in '<>|_~-•·.':
-        return True
-
-    # 4. Checkbox / radio button / square box glyphs
-    if raw_t in ('☐', '☑', '☒', '■', '□', '●', '○') and w <= 25 and h <= 25:
-        return True
+    # 5. Isolated punctuation / line noise (<= 2 chars)
+    if len(raw_t) <= 2 and not any(c.isalnum() for c in raw_t):
+        if (w <= 25 and h <= 25) or (conf_norm is not None and conf_norm < 0.80):
+            return True
 
     return False
 
-def clean_ocr_text(text: Optional[str]) -> str:
+def clean_leading_ocr_checkbox(text: str) -> str:
     """
-    Cleans OCR artifacts and improves typography accuracy:
-    - Fixes missing spaces after colons: "Title:Accounts" -> "Title: Accounts"
-    - Strips combobox trailing button artifacts: "Upper rightd" -> "Upper right"
-    - Strips combobox border dots: "Upper left." -> "Upper left"
-    - Cleans duplicate whitespace
+    Cleans OCR checkbox and bullet misrecognitions at the start of lines/words:
+    - '0Show shading' -> 'Show shading'
+    - '1CHECK' -> 'CHECK'
+    - '0 Show shading' -> 'Show shading'
+    - 'SShow shading' -> 'Show shading'
+    - 'vCHECK' -> 'CHECK'
+    - 'xAMOUNT' -> 'AMOUNT'
+    - Preserves ordinals: '1st', '2nd', '3rd', '4th'
+    - Preserves technical codes: '3D', '4K', '2FA', '5G', '1080p', '64bit'
+    - Preserves legitimate numbered lists: '8. Create...', '1. Introduction', '1) Step', '5.3 Print'
+    - Preserves pure numbers: '220', '280', '1/4/2019', '34.179.48'
     """
     if not text:
         return ""
 
-    t = text.strip()
+    protected_tech = r'(?:st|nd|rd|th|d|D|k|K|g|G|fa|FA|bit|BIT|p|P)\b'
+    # 1. Leading digit(s) attached directly to an alphabetic word: '0Show' -> 'Show', '1CHECK' -> 'CHECK'
+    text = re.sub(rf'^[0-9]+(?!(?:{protected_tech}))([A-Za-z_][A-Za-z0-9_]*)', r'\1', text)
 
-    # Fix space after colon if missing: e.g. "Title:Accounts" -> "Title: Accounts"
-    t = re.sub(r'([A-Za-z0-9]):([A-Za-z0-9])', r'\1: \2', t)
+    # 2. Leading '0 ' (zero followed by space and letter): '0 Show' -> 'Show'
+    text = re.sub(r'^0\s+([A-Za-z])', r'\1', text)
 
-    # Clean combobox trailing dropdown artifacts: e.g. "Upper rightd" -> "Upper right"
-    t = re.sub(r'\b(right|left|top|bottom|up|down|center|middle|none|yes|no|true|false)d\b', r'\1', t, flags=re.IGNORECASE)
-    t = re.sub(r'\b(right|left|top|bottom)v\b', r'\1', t, flags=re.IGNORECASE)
+    # 3. Checkbox square misrecognized as 'S' or 'O' before 'Show': 'SShow' -> 'Show', 'OShow' -> 'Show'
+    text = re.sub(r'^[SsOo]Show\b', 'Show', text)
 
-    # Clean combobox trailing dot from border: e.g. "Date: Upper left." -> "Date: Upper left"
-    t = re.sub(r'\b(Upper left|Upper right|Lower left|Lower right)\.', r'\1', t, flags=re.IGNORECASE)
+    # 4. Leading checkbox glyphs: '[ ]', '[]', '☐', etc.
+    text = re.sub(r'^(?:\[\s*\]|[\[\(][xXvV01\s][\]\)]|[☐☑☒■□●○✓✔√•·])\s*', '', text)
 
-    # Multiple spaces
-    t = re.sub(r'\s+', ' ', t).strip()
+    # 5. Checkbox tick/cross/square attached to all-caps word: 'vCHECK' -> 'CHECK', 'xAMOUNT' -> 'AMOUNT'
+    text = re.sub(r'^[vxoVXO_]([A-Z]{3,}\b)', r'\1', text)
 
-    return t
+    return text.strip()
+
+def clean_ocr_text(text: Optional[str]) -> str:
+    """
+    Cleans OCR artifacts and improves typography accuracy:
+    - Cleans leading checkbox artifacts (0Show -> Show, 1CHECK -> CHECK, SShow -> Show)
+    - Fixes missing spaces after colons: "Title:Accounts" -> "Title: Accounts"
+    - Strips combobox trailing button artifacts: "Upper rightd" -> "Upper right"
+    - Strips combobox border dots: "Upper left." -> "Upper left"
+    - Cleans duplicate whitespace while preserving legitimate document text and numbers
+    """
+    if not text:
+        return ""
+
+    lines = []
+    for line in text.splitlines():
+        line_clean = clean_leading_ocr_checkbox(line)
+        if not line_clean:
+            continue
+        # Fix space after colon if missing: e.g. "Title:Accounts" -> "Title: Accounts"
+        line_clean = re.sub(r'([A-Za-z0-9]):([A-Za-z0-9])', r'\1: \2', line_clean)
+        # Clean combobox trailing dropdown artifacts: e.g. "Upper rightd" -> "Upper right"
+        line_clean = re.sub(r'\b(right|left|top|bottom|up|down|center|middle|none|yes|no|true|false)d\b', r'\1', line_clean, flags=re.IGNORECASE)
+        line_clean = re.sub(r'\b(right|left|top|bottom)v\b', r'\1', line_clean, flags=re.IGNORECASE)
+        # Clean combobox trailing dot from border: e.g. "Date: Upper left." -> "Date: Upper left"
+        line_clean = re.sub(r'\b(Upper left|Upper right|Lower left|Lower right)\.', r'\1', line_clean, flags=re.IGNORECASE)
+        # Multiple spaces
+        line_clean = re.sub(r'\s+', ' ', line_clean).strip()
+        if line_clean:
+            lines.append(line_clean)
+
+    return "\n".join(lines)
+
+
+

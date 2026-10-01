@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { PageData, ExtractedElement } from '../types/extraction';
-import { ZoomIn, ZoomOut, RotateCcw, Link2, FileText } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw, Link2, FileText, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface PageViewerProps {
   pages: PageData[];
@@ -45,6 +45,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({
   const localPageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const pageRefs = pageRefsExternal || localPageRefs;
   const isProgrammaticScroll = useRef(false);
+  const lastSelectedElementIdRef = useRef<string | null>(null);
 
   if (!pages || pages.length === 0) {
     return (
@@ -58,8 +59,9 @@ export const PageViewer: React.FC<PageViewerProps> = ({
   const handleZoomOut = () => setZoom((prev) => Math.max(prev - 0.2, 0.5));
   const handleResetZoom = () => setZoom(1.0);
 
-  // Jump to page when selected via dropdown
-  const handleDropdownChange = (newIndex: number) => {
+  // Jump to page when selected via dropdown or prev/next buttons
+  const handlePageNavigation = (newIndex: number) => {
+    if (newIndex < 0 || newIndex >= pages.length) return;
     if (onPageChange) {
       onPageChange(newIndex);
     } else {
@@ -108,25 +110,53 @@ export const PageViewer: React.FC<PageViewerProps> = ({
     }
   };
 
-  // Scroll to page if an element on a specific page is selected from Results tabs
+  // Navigate to and center element's exact location on its page when selected
   useEffect(() => {
-    if (!selectedElementId) return;
+    if (!selectedElementId) {
+      lastSelectedElementIdRef.current = null;
+      return;
+    }
+    // Only scroll if the selected element actually changed
+    if (selectedElementId === lastSelectedElementIdRef.current) return;
+    lastSelectedElementIdRef.current = selectedElementId;
+
     for (let i = 0; i < pages.length; i++) {
-      const found = pages[i].elements.some((e) => e.id === selectedElementId);
-      if (found) {
-        if (onPageChange) {
-          onPageChange(i);
-        } else {
-          setInternalPageIndex(i);
+      const elem = pages[i].elements.find((e) => e.id === selectedElementId);
+      if (elem) {
+        if (i !== activePageIndex) {
+          if (onPageChange) {
+            onPageChange(i);
+          } else {
+            setInternalPageIndex(i);
+          }
         }
-        const targetEl = pageRefs.current[i];
-        if (targetEl) {
-          targetEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        const pageEl = pageRefs.current[i];
+        const container = containerRef.current;
+        if (pageEl && container) {
+          isProgrammaticScroll.current = true;
+          const containerRect = container.getBoundingClientRect();
+          const pageRect = pageEl.getBoundingClientRect();
+          const pageTopInContainer = pageRect.top - containerRect.top + container.scrollTop;
+
+          let targetScrollTop = pageTopInContainer;
+          if (elem.bbox && elem.bbox.length >= 4) {
+            const scaleY = pageEl.offsetHeight / Math.max(1, pages[i].height);
+            const elemTop = elem.bbox[1] * scaleY;
+            const elemHeight = (elem.bbox[3] - elem.bbox[1]) * scaleY;
+            // Center element vertically in container
+            targetScrollTop = pageTopInContainer + elemTop - (container.clientHeight / 2) + (elemHeight / 2);
+          }
+
+          container.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' });
+          setTimeout(() => {
+            isProgrammaticScroll.current = false;
+          }, 700);
         }
         break;
       }
     }
-  }, [selectedElementId, pages, onPageChange]);
+  }, [selectedElementId, pages, activePageIndex, onPageChange]);
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl flex flex-col h-[700px]">
@@ -138,18 +168,37 @@ export const PageViewer: React.FC<PageViewerProps> = ({
             <FileText className="w-3.5 h-3.5" />
             <span>Uploaded File</span>
           </div>
-          <span className="font-semibold text-slate-400">Page:</span>
-          <select
-            value={activePageIndex}
-            onChange={(e) => handleDropdownChange(Number(e.target.value))}
-            className="bg-slate-900 border border-slate-700 text-slate-100 rounded-lg px-2.5 py-1 focus:outline-none focus:border-indigo-500 font-medium cursor-pointer"
-          >
-            {pages.map((p, idx) => (
-              <option key={idx} value={idx}>
-                Page {p.page} of {pages.length}
-              </option>
-            ))}
-          </select>
+
+          {/* Page Navigation with Previous / Next Buttons */}
+          <div className="flex items-center space-x-1 bg-slate-900 border border-slate-700/80 rounded-lg p-0.5">
+            <button
+              onClick={() => handlePageNavigation(activePageIndex - 1)}
+              disabled={activePageIndex <= 0}
+              className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
+              title="Previous Page"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <select
+              value={activePageIndex}
+              onChange={(e) => handlePageNavigation(Number(e.target.value))}
+              className="bg-transparent text-slate-100 px-2 py-0.5 text-xs focus:outline-none font-medium cursor-pointer"
+            >
+              {pages.map((p, idx) => (
+                <option key={idx} value={idx} className="bg-slate-900 text-slate-100">
+                  Page {p.page} of {pages.length}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => handlePageNavigation(activePageIndex + 1)}
+              disabled={activePageIndex >= pages.length - 1}
+              className="p-1 rounded text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
+              title="Next Page"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         {/* Zoom Controls */}

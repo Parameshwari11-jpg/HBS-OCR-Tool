@@ -19,6 +19,9 @@ def validate_file_extension(filename: str) -> bool:
 def generate_job_id() -> str:
     return str(uuid.uuid4())
 
+def get_upload_dir() -> Path:
+    return UPLOAD_DIR
+
 def get_job_upload_path(job_id: str, original_filename: str) -> Path:
     ext = Path(original_filename).suffix.lower()
     return UPLOAD_DIR / f"{job_id}{ext}"

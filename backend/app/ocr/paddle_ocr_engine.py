@@ -71,12 +71,16 @@ class PaddleOCREngine:
                 ys = [pt[1] for pt in bbox_points]
                 bbox = [float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))]
                 
-                # Filter out UI dropdown buttons, close buttons, and icon artifacts
-                if is_ui_artifact(text, bbox):
+                # Filter out UI dropdown buttons, caption buttons (_ x), checkboxes, and noise artifacts
+                conf_val = float(confidence) if confidence is not None else None
+                if is_ui_artifact(text, bbox, confidence=conf_val):
                     continue
 
                 cleaned_text = clean_ocr_text(text)
                 if not cleaned_text:
+                    continue
+
+                if is_ui_artifact(cleaned_text, bbox, confidence=conf_val):
                     continue
 
                 results.append({

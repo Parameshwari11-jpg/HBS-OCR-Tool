@@ -122,22 +122,40 @@ npm install
 
 ## 🚀 Running the Application
 
-### Start the FastAPI Backend (Port 8000)
+### ⚡ Option 1: Single Unified Command (Recommended)
+
+You can launch both the **FastAPI Backend** and the **Vite Frontend** together using any of these single commands from the project root:
 
 ```bash
-# From workspace root with venv activated:
-.\venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --app-dir backend
+# Using batch file (or double-click run.bat in Windows Explorer):
+run.bat
+
+# OR using Python directly:
+python run.py
+
+# OR using npm:
+npm start
 ```
+This automatically starts:
+- **Backend**: `http://127.0.0.1:8000`
+- **Frontend**: `http://localhost:3000`
+- Automatically opens `http://localhost:3000` in your default browser.
+- Press **Ctrl+C** in the terminal to stop both servers cleanly.
 
-### Start the React + Vite Frontend (Port 3000)
+---
 
-```bash
-# In a separate terminal session:
-cd frontend
-npm run dev
-```
+### 🖥️ Option 2: Running Separately
 
-Open your browser and navigate to: `http://localhost:3000`
+If you prefer separate terminal windows:
+
+1. **Start Backend**:
+   ```bash
+   run_backend.bat
+   ```
+2. **Start Frontend**:
+   ```bash
+   run_frontend.bat
+   ```
 
 ---
 

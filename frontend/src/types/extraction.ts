@@ -9,7 +9,12 @@ export interface FontInfo {
 
 export interface ExtractedElement {
   id: string;
-  type: 'text' | 'image' | 'image_text' | 'table' | 'formula' | 'caption' | 'header' | 'footer' | 'footnote' | 'textbox' | 'shape' | 'drawing' | 'paragraph';
+  type: string;
+  content_type?: string;
+  tag?: string;
+  is_tagged?: boolean;
+  tag_source?: string;
+  parameters?: Record<string, any>;
   source: 'native' | 'ocr' | 'pp_structure' | 'docx' | 'docx_xml';
   text?: string;
   page: number;
@@ -68,10 +73,22 @@ export interface ExtractionJobStatus {
   error?: string;
 }
 
+export interface TaggingSummary {
+  is_tagged_document: boolean;
+  document_tag_status: 'tagged' | 'untagged' | 'partially_tagged';
+  total_elements: number;
+  tagged_elements_count: number;
+  inferred_elements_count: number;
+  content_types?: Record<string, number>;
+  tag_sources?: Record<string, number>;
+}
+
 export interface ExtractionResult {
   job_id: string;
   filename: string;
   file_type: 'pdf' | 'docx';
+  is_tagged_document?: boolean;
+  tagging_summary?: TaggingSummary;
   pages: PageData[];
   statistics: ExtractionStatistics;
   reconstructed_text: string;

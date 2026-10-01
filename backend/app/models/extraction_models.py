@@ -15,7 +15,13 @@ class BBox(BaseModel):
 
 class ExtractedElement(BaseModel):
     id: str
-    type: str # text, image, image_text, table, formula, caption, header, footer, footnote, textbox, shape, drawing, paragraph
+    type: str # text, image, image_text, table, formula, caption, header, footer, footnote, textbox, shape, drawing, paragraph, heading_1, heading_2, heading_3, title, list_item, code
+    content_type: Optional[str] = None # specific semantic content type
+    tag: Optional[str] = None # H1, H2, H3, Title, P, LI, Table, Formula, Figure, Header, Footer, Caption, Code, TextBox
+    is_tagged: bool = False # True if natively tagged in Word/PDF; False if inferred
+    tag_source: Optional[str] = None # pdf_struct_tree, docx_style, docx_xml, layout_inference, ocr, pp_structure
+    parameters: Dict[str, Any] = Field(default_factory=dict) # Rich parameters dictionary
+    
     source: str # native, ocr, pp_structure, docx, docx_xml
     text: Optional[str] = None
     page: int = 1
@@ -76,10 +82,21 @@ class ExtractionJobStatus(BaseModel):
     stage_message: Optional[str] = None
     error: Optional[str] = None
 
+class TaggingSummary(BaseModel):
+    is_tagged_document: bool = False
+    document_tag_status: str = "untagged" # tagged, untagged, partially_tagged
+    total_elements: int = 0
+    tagged_elements_count: int = 0
+    inferred_elements_count: int = 0
+    content_types: Dict[str, int] = Field(default_factory=dict)
+    tag_sources: Dict[str, int] = Field(default_factory=dict)
+
 class ExtractionResult(BaseModel):
     job_id: str
     filename: str
     file_type: str
+    is_tagged_document: bool = False
+    tagging_summary: Optional[TaggingSummary] = None
     pages: List[PageData] = Field(default_factory=list)
     statistics: ExtractionStatistics = Field(default_factory=ExtractionStatistics)
     reconstructed_text: str = ""

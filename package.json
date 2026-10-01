@@ -1,0 +1,9 @@
+{
+  "name": "universal-document-text-extractor",
+  "version": "1.0.0",
+  "description": "Universal Document Text Extractor with Originality Check",
+  "scripts": {
+    "start": "python run.py",
+    "dev": "python run.py"
+  }
+}

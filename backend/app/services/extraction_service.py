@@ -61,7 +61,7 @@ class ExtractionService:
             reconstructed_lines = []
             for p in pages:
                 reconstructed_lines.append(f"--- Page {p.page} ---")
-                valid_elems = [e for e in p.elements if not e.possible_duplicate and e.type != "image"]
+                valid_elems = [e for e in p.elements if not e.possible_duplicate and e.type not in ("image", "figure")]
                 sorted_elems = sorted(valid_elems, key=lambda e: (
                     e.reading_order if e.reading_order is not None and e.reading_order > 0 else 99999,
                     e.bbox[1] if e.bbox else 99999,
@@ -69,10 +69,10 @@ class ExtractionService:
                 ))
                 for elem in sorted_elems:
                     if elem.text and elem.text.strip():
-                        if is_ui_artifact(elem.text, elem.bbox):
+                        if is_ui_artifact(elem.text, elem.bbox, confidence=elem.confidence):
                             continue
                         cleaned_txt = clean_ocr_text(elem.text)
-                        if cleaned_txt:
+                        if cleaned_txt and not is_ui_artifact(cleaned_txt, elem.bbox, confidence=elem.confidence):
                             reconstructed_lines.append(cleaned_txt)
                 reconstructed_lines.append("") # Blank line after page
 
@@ -82,6 +82,8 @@ class ExtractionService:
                 job_id=job_id,
                 filename=filename,
                 file_type=file_type,
+                is_tagged_document=res.get("is_tagged_document", False),
+                tagging_summary=res.get("tagging_summary"),
                 pages=pages,
                 statistics=statistics,
                 reconstructed_text=reconstructed_text

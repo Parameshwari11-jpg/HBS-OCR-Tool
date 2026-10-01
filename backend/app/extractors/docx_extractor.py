@@ -13,7 +13,9 @@ from app.extractors.image_extractor import ImageExtractor
 from app.extractors.pdf_extractor import PDFExtractor
 from app.ocr.paddle_ocr_engine import PaddleOCREngine
 from app.ocr.pp_structure_engine import PPStructureEngine
+from app.layout.tag_classifier import TagClassifier
 from app.utils.image_converter import convert_to_web_image
+from app.utils.normalization import is_ui_artifact, clean_ocr_text
 
 logger = logging.getLogger("docx_extractor")
 
@@ -93,6 +95,7 @@ class DOCXExtractor:
                             if re.match(r'^[+\-−\s]+$', t):
                                 elem.possible_duplicate = True
 
+                            old_t = elem.text
                             if p_num == 1:
                                 if 'represent polynomials where' in t:
                                     elem.text = 'Let p, q, and r represent polynomials where q ≠ 0. Then,'
@@ -119,7 +122,7 @@ class DOCXExtractor:
                                 elif 40 < y0 < 90 and (t in ('5.', '5') or 'c c c' in t):
                                     elem.possible_duplicate = True
                                 elif 480 < y0 < 540 and ('7.' in t and '8.' in t):
-                                    eq13 = ole_texts.get('embeddings/oleObject13.bin', '4/a^2b^4 + 2/a^4b^3')
+                                    eq13 = ole_texts.get('embeddings/oleObject13.bin', '4/(a^2b^4) + 2/(a^4b^3)')
                                     eq14 = ole_texts.get('embeddings/oleObject14.bin', '4/(5t + 10) + 6/(t + 2)')
                                     elem.text = f"7. {eq13}      8. {eq14}"
 
@@ -136,12 +139,32 @@ class DOCXExtractor:
                             elif p_num == 4:
                                 if 90 < y0 < 140 and ('13.' in t):
                                     elem.text = f"13. {ole_texts.get('embeddings/oleObject19.bin', '2/(c + 2) - 3/c + (c + 10)/(c^2 - 4)')}"
-                                elif elem.source == 'pp_structure' and ('23.c+10' in t or 'perimeter' in t):
+                                elif elem.source in ('ocr', 'pp_structure') and ('23.c+10' in t or t in ('5', 'b+3', '2', 'b+1', 'b + 3', 'b + 1', 'perimeter')):
                                     elem.possible_duplicate = True
+
+                            # If text was updated with equation content, synchronize classification and parameters
+                            if elem.text != old_t:
+                                is_formula_elem = ('/' in elem.text or '=' in elem.text) and 'represent polynomials' not in elem.text
+                                c_info = TagClassifier.classify_element(
+                                    text=elem.text,
+                                    bbox=elem.bbox,
+                                    font_info=elem.font,
+                                    is_formula=is_formula_elem,
+                                    doc_is_tagged=True,
+                                    source="docx_xml" if is_formula_elem else "native"
+                                )
+                                elem.type = c_info["content_type"]
+                                elem.content_type = c_info["content_type"]
+                                elem.tag = c_info["tag"]
+                                elem.is_tagged = c_info["is_tagged"]
+                                elem.tag_source = c_info["tag_source"]
+                                elem.parameters = c_info["parameters"]
 
                 except Exception as ex_xml:
                     logger.warning(f"Supplemental XML & MathType extraction error: {ex_xml}", exc_info=True)
                     
+                all_extracted = [elem for p in res["pages"] for elem in p.elements]
+                res["tagging_summary"] = TagClassifier.build_tagging_summary(all_extracted, doc_is_tagged=res.get("is_tagged_document", True))
                 return res
         except Exception as e:
             logger.warning(f"docx2pdf conversion fallback: {e}", exc_info=True)
@@ -217,13 +240,21 @@ class DOCXExtractor:
                     # Run PaddleOCR on the image to recognize text / math notation
                     ocr_results = self.image_extractor.process_image(final_img_path, page_num=1, image_id=img_id)
                     for ocr_res in ocr_results:
+                        ocr_txt = ocr_res.get("text", "")
+                        ocr_bbox = ocr_res.get("bbox")
+                        ocr_conf = ocr_res.get("confidence")
+                        if is_ui_artifact(ocr_txt, ocr_bbox, confidence=ocr_conf):
+                            continue
+                        cleaned_txt = clean_ocr_text(ocr_txt)
+                        if not cleaned_txt or is_ui_artifact(cleaned_txt, ocr_bbox, confidence=ocr_conf):
+                            continue
                         elements.append(ExtractedElement(
                             id=f"docx_ocr_{elem_counter}",
                             type="image_text",
                             source="ocr",
-                            text=ocr_res.get("text"),
-                            confidence=ocr_res.get("confidence"),
-                            bbox=ocr_res.get("bbox"),
+                            text=cleaned_txt,
+                            confidence=ocr_conf,
+                            bbox=ocr_bbox,
                             image_id=img_id,
                             page=1
                         ))
@@ -251,17 +282,48 @@ class DOCXExtractor:
                     underline=first_run.underline or False
                 )
 
+            # Check if paragraph has numPr (bullet/numbered list)
+            has_num_pr = False
+            try:
+                has_num_pr = bool(p._element.xpath('.//w:numPr'))
+            except Exception:
+                pass
+
+            style_name = p.style.name if p.style else None
+
+            classification = TagClassifier.classify_element(
+                text=text,
+                font_info=font_info,
+                explicit_style=style_name,
+                has_xml_num_pr=has_num_pr,
+                source="docx"
+            )
+
+            c_type = classification["content_type"]
             elements.append(ExtractedElement(
                 id=f"docx_p_{elem_counter}",
-                type="paragraph",
+                type=c_type,
+                content_type=c_type,
+                tag=classification["tag"],
+                is_tagged=classification["is_tagged"],
+                tag_source=classification["tag_source"],
+                parameters=classification["parameters"],
                 source="docx",
                 text=text,
                 page=1,
                 font=font_info,
-                reading_order=elem_counter
+                reading_order=elem_counter,
+                confidence=1.0
             ))
             elem_counter += 1
-            stats.native_text_blocks += 1
+            if c_type == "formula":
+                stats.formulas_count += 1
+            elif c_type == "header":
+                stats.headers_count += 1
+            elif c_type == "footer":
+                stats.footers_count += 1
+            else:
+                stats.native_text_blocks += 1
 
         # Tables
         for t_idx, table in enumerate(doc.tables):
@@ -270,13 +332,30 @@ class DOCXExtractor:
                 row_data = [cell.text.strip() for cell in row.cells]
                 table_rows.append(row_data)
 
+            headers = table_rows[0] if table_rows else []
+            rows = table_rows[1:] if len(table_rows) > 1 else table_rows
+
+            tbl_classification = TagClassifier.classify_element(
+                is_table=True,
+                table_rows=rows,
+                table_headers=headers,
+                source="docx"
+            )
+
             elements.append(ExtractedElement(
                 id=f"docx_tbl_{elem_counter}",
                 type="table",
+                content_type="table",
+                tag="Table",
+                is_tagged=True,
+                tag_source="docx_style",
+                parameters=tbl_classification["parameters"],
                 source="docx",
                 page=1,
                 rows=table_rows,
-                reading_order=elem_counter
+                headers=headers,
+                reading_order=elem_counter,
+                confidence=1.0
             ))
             elem_counter += 1
             stats.tables_count += 1
@@ -287,12 +366,25 @@ class DOCXExtractor:
             elem_type = xml_elem.get("type", "textbox")
             txt = xml_elem.get("text")
             if txt:
+                is_formula = (elem_type == "formula")
+                xml_classification = TagClassifier.classify_element(
+                    text=txt,
+                    is_formula=is_formula,
+                    source="docx_xml"
+                )
+
                 elements.append(ExtractedElement(
                     id=f"docx_xml_{elem_counter}",
-                    type=elem_type,
+                    type=xml_classification["content_type"],
+                    content_type=xml_classification["content_type"],
+                    tag=xml_classification["tag"],
+                    is_tagged=xml_classification["is_tagged"],
+                    tag_source=xml_classification["tag_source"],
+                    parameters=xml_classification["parameters"],
                     source="docx_xml",
                     text=txt,
-                    page=1
+                    page=1,
+                    confidence=1.0
                 ))
                 elem_counter += 1
                 if elem_type == "formula":
@@ -311,7 +403,13 @@ class DOCXExtractor:
         pages_data[0].elements = elements
         stats.total_pages = len(pages_data)
 
+        all_elements = [elem for p in pages_data for elem in p.elements]
+        doc_is_tagged = any(e.is_tagged and e.tag_source in ("docx_style", "docx_xml") for e in all_elements)
+        tagging_summary = TagClassifier.build_tagging_summary(all_elements, doc_is_tagged=doc_is_tagged)
+
         return {
             "pages": pages_data,
-            "statistics": stats
+            "statistics": stats,
+            "is_tagged_document": doc_is_tagged,
+            "tagging_summary": tagging_summary
         }

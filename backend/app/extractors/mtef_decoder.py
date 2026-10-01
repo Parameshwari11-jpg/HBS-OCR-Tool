@@ -17,52 +17,36 @@ def clean_math_term(s: str) -> str:
     return s
 
 
+def _needs_parens(expr: str) -> bool:
+    expr = expr.strip()
+    if not expr:
+        return False
+    if expr.startswith('(') and expr.endswith(')'):
+        depth = 0
+        all_enclosed = True
+        for i, ch in enumerate(expr):
+            if ch == '(': depth += 1
+            elif ch == ')': depth -= 1
+            if depth == 0 and i < len(expr) - 1:
+                all_enclosed = False
+                break
+        if all_enclosed:
+            return False
+    body = expr[1:] if expr[0] in ('+', '-') else expr
+    return bool(re.search(r'[\+\-\=]', body))
+
+
 def format_fraction(num: str, den: str) -> str:
     """
-    Formats fractions cleanly without superfluous parentheses.
-    Single-term numerators and denominators (e.g. p, q, 7, 10, 3a, 4c, d^2, 36)
-    are output directly as p/q, 7/10, 3a/(a - 4), etc.
-    Compound expressions with binary operators (+, -, ±) receive parentheses.
+    Formats fractions mathematically correctly:
+    Compound expressions in numerator or denominator (containing + or -) are parenthesized,
+    e.g. (p + r)/q, (p - r)/q, 3a/(a - 4), (a + 8)/(a - 4).
+    Single-term numerators and denominators (e.g. p/q, 7/10) remain clean without parentheses.
     """
-    num = clean_math_term(num)
-    den = clean_math_term(den)
-
-    def needs_parens(expr: str) -> bool:
-        expr = expr.strip()
-        if not expr:
-            return False
-        # If already completely enclosed in matching outer parentheses, don't double wrap
-        if expr.startswith('(') and expr.endswith(')'):
-            depth = 0
-            all_inside = True
-            for i, c in enumerate(expr):
-                if c == '(':
-                    depth += 1
-                elif c == ')':
-                    depth -= 1
-                    if depth == 0 and i < len(expr) - 1:
-                        all_inside = False
-                        break
-            if all_inside:
-                return False
-
-        # Ignore leading unary minus/plus like '-3x'
-        t = expr.lstrip()
-        if t.startswith('-') or t.startswith('+'):
-            t = t[1:].strip()
-
-        depth = 0
-        for c in t:
-            if c in '([':
-                depth += 1
-            elif c in ')]':
-                depth -= 1
-            elif depth == 0 and c in '+-\u2212\u00b1':
-                return True
-        return False
-
-    n_str = f"({num})" if needs_parens(num) else num
-    d_str = f"({den})" if needs_parens(den) else den
+    num = clean_math_term(num).strip()
+    den = clean_math_term(den).strip()
+    n_str = f"({num})" if _needs_parens(num) else num
+    d_str = f"({den})" if _needs_parens(den) else den
     return f"{n_str}/{d_str}"
 
 
@@ -106,6 +90,7 @@ class MTEFDecoder:
         result = self._parse_node()
         result = clean_math_term(result)
         result = re.sub(r' +', ' ', result).strip()
+        result = result.replace('+ -', '-').replace('- +', '-')
         return result
 
     def _read_byte(self) -> int:
@@ -270,10 +255,22 @@ class MTEFDecoder:
                 rad = lines[-1] if lines else ""
                 return f"\u221a({rad})"
 
-            # Brackets / Parentheses: 0, 1
-            elif sel in (0, 1):
+            # Fences / Brackets / Parentheses
+            elif sel == 0:  # tmPAREN: ( ... )
                 inner = " ".join([l.strip() for l in sub_lines if l.strip()])
                 return f"({inner})"
+
+            elif sel == 1:  # tmBRACK: [ ... ]
+                inner = " ".join([l.strip() for l in sub_lines if l.strip()])
+                return f"[{inner}]"
+
+            elif sel == 2:  # tmBRACE: { ... }
+                inner = " ".join([l.strip() for l in sub_lines if l.strip()])
+                return f"{{{inner}}}"
+
+            elif sel == 3:  # tmBAR: | ... |
+                inner = " ".join([l.strip() for l in sub_lines if l.strip()])
+                return f"|{inner}|"
 
             else:
                 return " ".join([l.strip() for l in sub_lines if l.strip()])
