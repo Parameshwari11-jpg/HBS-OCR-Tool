@@ -1,7 +1,62 @@
+# Virtual Environments
 venv/
 .venv/
+env/
+ENV/
+
+# Python cache and build
 __pycache__/
-*.pyc
-.env
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node & Frontend dependencies and builds
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+.vite/
+frontend/.vite/
+
+# Temporary and upload artifacts (OCR generated images & uploaded test files)
+backend/temp/
+backend/uploads/
+backend/scratch/
+backend/test_*.py
+scratch/
+temp/
+uploads/
+*.log
+
+
+# Test sample files, generated output images and test caches
+tests/*.png
+tests/*.jpg
+tests/*.jpeg
+tests/*.pdf
+tests/*.docx
+tests/*.bin
+tests/*.json
+tests/thread_test.pdf
+tests/sample_math.docx
+tests/exact_original_sample.png
+exact_original_sample.png
+exact_original_sample_*.png
+temp_crop_*.png
+temp_crop_*.jpg
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
+*.swp
+*.swo
+.env
+.env.local

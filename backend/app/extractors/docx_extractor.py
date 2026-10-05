@@ -122,7 +122,7 @@ class DOCXExtractor:
 
                             # Synchronize classification when text changed
                             if elem.text != old_t:
-                                is_formula_elem = ('/' in elem.text or '=' in elem.text) and 'represent polynomials' not in elem.text
+                                is_formula_elem = TagClassifier.is_math_or_formula(elem.text)
                                 c_info = TagClassifier.classify_element(
                                     text=elem.text,
                                     bbox=elem.bbox,

@@ -121,11 +121,11 @@ class JobService:
         except Exception as ex:
             logger.debug(f"find_latest_result error: {ex}")
 
-        # If specific filename match was not found, fallback to the latest result on disk
-        if latest_any_result is not None:
-            return latest_any_result
+        # If specific filename query was requested but not matched, do not fallback to an unrelated file
+        if filename and norm_q:
+            return None
 
-        return None
+        return latest_any_result
 
     def _persist_status(self, job_id: str, status: ExtractionJobStatus):
         try:
