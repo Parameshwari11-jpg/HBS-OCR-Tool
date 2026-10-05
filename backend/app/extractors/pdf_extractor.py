@@ -13,6 +13,7 @@ from app.layout.duplicate_detector import detect_duplicates
 from app.layout.reading_order import sort_reading_order
 from app.layout.tag_classifier import TagClassifier
 from app.utils.normalization import is_ui_artifact, clean_ocr_text
+from app.ocr.fraction_assembler import assemble_vertical_fractions
 
 logger = logging.getLogger("pdf_extractor")
 
@@ -122,6 +123,24 @@ class PDFExtractor:
                 if b.get("type") != 0:
                     continue
 
+                # Filter out background diagonal and fragment watermark artifacts
+                is_wm = False
+                for line in b.get("lines", []):
+                    direction = line.get("dir", (1.0, 0.0))
+                    if abs(direction[1]) > 0.2:
+                        l_text = "".join(s.get("text", "") for s in line.get("spans", [])).lower()
+                        if any(frag in l_text for frag in ["exclusive use", "excl", "e use of", "instruc", "rs and", "ents in", "the idea", "demic p", "ership", "do not print", "do n print", "partnership"]) or len(l_text.strip()) < 15:
+                            is_wm = True
+                            break
+                if is_wm:
+                    continue
+
+                b_raw = " ".join("".join(s.get("text", "") for s in l.get("spans", [])) for l in b.get("lines", [])).lower()
+                if any(frag in b_raw for frag in ["exclusive use", "excl e use", "do not print", "do n print", "academic partnership", "evaluation only. created with aspose"]):
+                    continue
+                if any(frag in b_raw for frag in ["instruc", "rs and", "ents in", "demic p", "ership"]) and any(s.get("size", 0) > 20 for l in b.get("lines", []) for s in l.get("spans", [])):
+                    continue
+
                 lines = b.get("lines", [])
                 block_lines_text = []
                 span_fonts = []
@@ -137,7 +156,7 @@ class PDFExtractor:
                     for s in line_spans:
                         st = s.get("text", "")
                         if st:
-                            if span_parts and not span_parts[-1].endswith(" ") and not st.startswith(" "):
+                            if span_parts and not span_parts[-1].endswith(" ") and not st.startswith(" ") and not (st and st[0] in ".,;:!?)]}%"):
                                 span_parts.append(" ")
                             span_parts.append(st)
                     line_str = "".join(span_parts).strip()
@@ -160,17 +179,32 @@ class PDFExtractor:
                             span_bolds.append(is_b)
                             span_italics.append(is_i)
 
-                # Assemble block lines, joining same-baseline spans (within 4pt)
-                merged_block_lines = []
+                # Group lines by baseline (y0 within 4pt) and sort each baseline left-to-right by x0
+                baseline_groups = []
                 for y0, x0, x1, l_txt in structured_lines:
-                    if merged_block_lines and abs(y0 - merged_block_lines[-1][0]) <= 4.0:
-                        prev_y0, prev_x0, prev_x1, prev_txt = merged_block_lines[-1]
-                        if (x0 - prev_x1) > 35 and not any(w in l_txt for w in ('Then', 'where', '=')):
-                            merged_block_lines.append((y0, x0, x1, l_txt))
+                    matched = False
+                    for bg in baseline_groups:
+                        if abs(y0 - bg[0][0]) <= 4.0:
+                            bg.append((y0, x0, x1, l_txt))
+                            matched = True
+                            break
+                    if not matched:
+                        baseline_groups.append([(y0, x0, x1, l_txt)])
+
+                # Assemble block lines, keeping separate lines when gap > 12 pt
+                merged_block_lines = []
+                for bg in baseline_groups:
+                    bg.sort(key=lambda item: item[1]) # Sort left-to-right by x0
+                    cur_y0, cur_x0, cur_x1, cur_txt = bg[0]
+                    for item in bg[1:]:
+                        iy0, ix0, ix1, itxt = item
+                        if (ix0 - cur_x1) > 12 and not any(w in itxt for w in ('Then', 'where', '=')):
+                            merged_block_lines.append((cur_y0, cur_x0, cur_x1, cur_txt))
+                            cur_y0, cur_x0, cur_x1, cur_txt = iy0, ix0, ix1, itxt
                         else:
-                            merged_block_lines[-1] = (prev_y0, prev_x0, max(prev_x1, x1), f"{prev_txt} {l_txt}")
-                    else:
-                        merged_block_lines.append((y0, x0, x1, l_txt))
+                            cur_x1 = max(cur_x1, ix1)
+                            cur_txt = f"{cur_txt} {itxt}"
+                    merged_block_lines.append((cur_y0, cur_x0, cur_x1, cur_txt))
 
                 text_clean = "\n".join(item[3] for item in merged_block_lines).strip()
                 if not text_clean:
@@ -345,16 +379,20 @@ class PDFExtractor:
                     stats.images_count += 1
 
                     if img_save_path and os.path.exists(img_save_path):
-                        saved_images.append({
-                            "path": img_save_path,
-                            "bbox": img_bbox,
-                            "width": img_w or rect_info.width,
-                            "height": img_h or rect_info.height
-                        })
+                        w_img = img_w or rect_info.width
+                        h_img = img_h or rect_info.height
+                        if w_img >= 28 and h_img >= 20:
+                            saved_images.append({
+                                "path": img_save_path,
+                                "bbox": img_bbox,
+                                "width": w_img,
+                                "height": h_img
+                            })
 
             # Step 4 — Smart OCR Strategy (Fast & Accurate)
             # Case A: Scanned Page (little to no native text) -> Run full-page PaddleOCR
-            is_scanned_page = total_native_chars < 50
+            raw_native_text = page.get_text().strip()
+            is_scanned_page = (len(raw_native_text) < 15 and total_native_chars == 0)
             if is_scanned_page:
                 ocr_results = self.ocr_engine.run_ocr(page_img_path, page_num=page_num)
                 for ocr_res in ocr_results:
@@ -406,8 +444,10 @@ class PDFExtractor:
                         try:
                             with Image.open(s_img["path"]) as test_im:
                                 w_im, h_im = test_im.size
-                                if h_im < 120 or w_im < 120:
-                                    scale_factor = max(2, min(5, int(180 / max(1, h_im))))
+                                if w_im < 28 or h_im < 20:
+                                    continue
+                                if h_im < 160 or w_im < 160:
+                                    scale_factor = max(2, min(5, int(220 / max(1, h_im))))
                                     scale_m = float(scale_factor)
                                     upscaled_im = test_im.resize((w_im * scale_factor, h_im * scale_factor), Image.Resampling.LANCZOS)
                                     from PIL import ImageOps
@@ -419,11 +459,16 @@ class PDFExtractor:
                             img_path_for_ocr = s_img["path"]
 
                         crop_results = self.ocr_engine.run_ocr(img_path_for_ocr, page_num=page_num)
+                        crop_results = assemble_vertical_fractions(crop_results)
                         img_bbox = s_img["bbox"]
                         iw = max(1.0, img_bbox[2] - img_bbox[0])
                         ih = max(1.0, img_bbox[3] - img_bbox[1])
                         crop_w = max(1.0, float(s_img["width"]))
                         crop_h = max(1.0, float(s_img["height"]))
+
+                        pad_b = 15.0 if scale_m > 1.0 else 0.0
+                        scaled_w = max(1.0, crop_w * scale_m)
+                        scaled_h = max(1.0, crop_h * scale_m)
 
                         for crop_res in crop_results:
                             crop_text = crop_res.get("text", "").strip()
@@ -431,24 +476,32 @@ class PDFExtractor:
                                 continue
                             c_bbox = crop_res.get("bbox", [0, 0, 0, 0])
                             crop_conf = crop_res.get("confidence")
-                            if is_ui_artifact(crop_text, c_bbox, confidence=crop_conf):
-                                continue
-                            crop_text = clean_ocr_text(crop_text)
-                            if not crop_text or is_ui_artifact(crop_text, c_bbox, confidence=crop_conf):
-                                continue
+
+                            norm_x0 = max(0.0, (c_bbox[0] - pad_b) / scaled_w)
+                            norm_y0 = max(0.0, (c_bbox[1] - pad_b) / scaled_h)
+                            norm_x1 = min(1.0, (c_bbox[2] - pad_b) / scaled_w)
+                            norm_y1 = min(1.0, (c_bbox[3] - pad_b) / scaled_h)
 
                             mapped_bbox = [
-                                img_bbox[0] + (c_bbox[0] / crop_w) * iw,
-                                img_bbox[1] + (c_bbox[1] / crop_h) * ih,
-                                img_bbox[0] + (c_bbox[2] / crop_w) * iw,
-                                img_bbox[1] + (c_bbox[3] / crop_h) * ih
+                                img_bbox[0] + norm_x0 * iw,
+                                img_bbox[1] + norm_y0 * ih,
+                                img_bbox[0] + norm_x1 * iw,
+                                img_bbox[1] + norm_y1 * ih
                             ]
 
+                            if is_ui_artifact(crop_text, mapped_bbox, confidence=crop_conf):
+                                continue
+                            crop_text = clean_ocr_text(crop_text)
+                            if not crop_text or is_ui_artifact(crop_text, mapped_bbox, confidence=crop_conf):
+                                continue
+
+                            is_frac_formula = bool(crop_res.get("is_formula", False))
                             crop_classification = TagClassifier.classify_element(
                                 text=crop_text,
                                 bbox=mapped_bbox,
                                 page_width=page_width,
                                 page_height=page_height,
+                                is_formula=is_frac_formula,
                                 doc_is_tagged=doc_is_tagged,
                                 source="ocr"
                             )

@@ -125,6 +125,39 @@ class DiffEngine:
                 orig_sub = orig_lines[i1:i2]
                 ext_sub = ext_lines[j1:j2]
 
+                # Check if this replace block has identical words across different line splits
+                orig_joined = " ".join(orig_sub).strip()
+                ext_joined = " ".join(ext_sub).strip()
+                orig_words_n = [w.lower() for w in re.findall(r'\S+', orig_joined)]
+                ext_words_n = [w.lower() for w in re.findall(r'\S+', ext_joined)]
+
+                if orig_words_n and orig_words_n == ext_words_n:
+                    # Content is identical across different line breaks (e.g. side-by-side buttons)
+                    if len(orig_sub) == 1 and len(ext_sub) > 1:
+                        for idx_e, e_line in enumerate(ext_sub):
+                            line_diffs.append(LineDiffItem(
+                                orig_line_num=i1 + 1,
+                                ext_line_num=j1 + idx_e + 1,
+                                tag='equal',
+                                orig_line=e_line,
+                                extracted_line=e_line,
+                                diff_type=DifferenceType.EXACT_MATCH,
+                                mismatches=[]
+                            ))
+                        continue
+                    elif len(ext_sub) == 1 and len(orig_sub) > 1:
+                        for idx_o, o_line in enumerate(orig_sub):
+                            line_diffs.append(LineDiffItem(
+                                orig_line_num=i1 + idx_o + 1,
+                                ext_line_num=j1 + 1,
+                                tag='equal',
+                                orig_line=o_line,
+                                extracted_line=o_line,
+                                diff_type=DifferenceType.EXACT_MATCH,
+                                mismatches=[]
+                            ))
+                        continue
+
                 max_len = max(len(orig_sub), len(ext_sub))
                 for k in range(max_len):
                     o_line = orig_sub[k] if k < len(orig_sub) else ""

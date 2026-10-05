@@ -6,16 +6,24 @@ import { Statistics } from '../components/Statistics';
 import { PageViewer } from '../components/PageViewer';
 import { ResultsTabs } from '../components/ResultsTabs';
 import { ExportButtons } from '../components/ExportButtons';
-import { uploadFile, startExtraction, getJobStatus, getJobResults } from '../api/extractionApi';
+import { uploadFile, startExtraction, getJobStatus, getJobResults, lookupJobResults } from '../api/extractionApi';
 import { ExtractionJobStatus, ExtractionResult, ExtractedElement } from '../types/extraction';
+import { ExtractorLoadRequest } from '../App';
 import { AlertCircle, RefreshCw, FileText, FileCode, ShieldCheck } from 'lucide-react';
 
 interface HomeProps {
+  loadRequest?: ExtractorLoadRequest | null;
+  onClearLoadRequest?: () => void;
   onNavigateToOriginality?: (jobId: string, filename: string, extractedText?: string) => void;
   onNavigate?: (view: 'extractor' | 'originality') => void;
 }
 
-export const Home: React.FC<HomeProps> = ({ onNavigateToOriginality, onNavigate }) => {
+export const Home: React.FC<HomeProps> = ({
+  loadRequest,
+  onClearLoadRequest,
+  onNavigateToOriginality,
+  onNavigate,
+}) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<ExtractionJobStatus | null>(null);
@@ -36,6 +44,190 @@ export const Home: React.FC<HomeProps> = ({ onNavigateToOriginality, onNavigate 
   const activeScroller = useRef<'left' | 'right' | 'programmatic' | null>(null);
   const scrollLockTimeout = useRef<any>(null);
 
+  // Restore previous extraction result from sessionStorage or server on mount if available
+  useEffect(() => {
+    if (!result && !jobId && !isLoading) {
+      try {
+        if (sessionStorage.getItem('new_upload_mode') === 'true') {
+          return;
+        }
+        const savedJobId = sessionStorage.getItem('last_extraction_job_id');
+        if (savedJobId) {
+          getJobResults(savedJobId)
+            .then((res) => {
+              if (res && res.job_id) {
+                setJobId(res.job_id);
+                setResult(res);
+              }
+            })
+            .catch(() => {
+              sessionStorage.removeItem('last_extraction_job_id');
+            });
+        }
+      } catch (e) {}
+    }
+  }, []);
+
+  // Handle explicit request to load a specific document's extracted text OR trigger a fresh upload
+  useEffect(() => {
+    if (!loadRequest) return;
+
+    // DIRECT NEW FILE UPLOAD: Reset state completely so user sees empty UploadArea
+    if (loadRequest.action === 'new_upload') {
+      setSelectedFile(null);
+      setJobId(null);
+      setJobStatus(null);
+      setResult(null);
+      setErrorMessage(null);
+      setIsLoading(false);
+      setCurrentPageIndex(0);
+      leftPageRefs.current = [];
+      rightPageRefs.current = [];
+      try {
+        sessionStorage.removeItem('last_extraction_job_id');
+        sessionStorage.setItem('new_upload_mode', 'true');
+      } catch (e) {}
+      onClearLoadRequest?.();
+      return;
+    }
+
+    try {
+      sessionStorage.removeItem('new_upload_mode');
+    } catch (e) {}
+
+    // Check if currently displayed result already matches
+    if (result) {
+      const matchesJob = Boolean(loadRequest.jobId && result.job_id === loadRequest.jobId);
+      const normalize = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const reqNameNorm = normalize(loadRequest.filename);
+      const resNameNorm = normalize(result.filename);
+      const matchesName = Boolean(
+        reqNameNorm && resNameNorm && (reqNameNorm.includes(resNameNorm) || resNameNorm.includes(reqNameNorm))
+      );
+
+      if (matchesJob || matchesName) {
+        onClearLoadRequest?.();
+        return;
+      }
+    }
+
+    let isCancelled = false;
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    const loadRequestedData = async () => {
+      try {
+        // 1. Try by jobId if provided
+        if (loadRequest.jobId) {
+          try {
+            const res = await getJobResults(loadRequest.jobId);
+            if (!isCancelled && res && res.job_id) {
+              setJobId(res.job_id);
+              setResult(res);
+              setIsLoading(false);
+              sessionStorage.setItem('last_extraction_job_id', res.job_id);
+              onClearLoadRequest?.();
+              return;
+            }
+          } catch (e) {
+            console.warn('Could not fetch by jobId:', e);
+          }
+        }
+
+        // 2. Try lookup by filename (or latest)
+        try {
+          const res = await lookupJobResults(loadRequest.filename);
+          if (!isCancelled && res && res.job_id) {
+            setJobId(res.job_id);
+            setResult(res);
+            setIsLoading(false);
+            sessionStorage.setItem('last_extraction_job_id', res.job_id);
+            onClearLoadRequest?.();
+            return;
+          }
+        } catch (e) {
+          console.warn('Could not find by filename lookup:', e);
+        }
+
+        // 3. Fallback: synthesize extraction result from extractedText & filename so upload screen NEVER shows
+        if (loadRequest.extractedText || loadRequest.filename) {
+          const fallbackText = loadRequest.extractedText || '';
+          const fallbackName = loadRequest.filename || 'Extracted Document';
+          const ext = fallbackName.toLowerCase().endsWith('.docx') ? 'docx' : 'pdf';
+          const syntheticJobId = loadRequest.jobId || 'imported_' + Date.now();
+
+          const pageSplits = fallbackText.split(/\n\s*--- Page \d+ ---\s*\n/);
+          const rawPages = pageSplits.length > 1 ? pageSplits.filter((p) => p.trim()) : [fallbackText];
+
+          const pages = rawPages.map((pt, idx) => ({
+            page: idx + 1,
+            width: 612,
+            height: 792,
+            elements: pt
+              .split('\n')
+              .filter((l) => l.trim())
+              .map((line, lIdx) => ({
+                id: `el_p${idx + 1}_${lIdx}`,
+                type: 'text',
+                source: 'native' as const,
+                text: line,
+                page: idx + 1,
+                reading_order: lIdx + 1,
+                bbox: [50, 50 + lIdx * 20, 550, 68 + lIdx * 20] as [number, number, number, number],
+              })),
+          }));
+
+          const syntheticResult: ExtractionResult = {
+            job_id: syntheticJobId,
+            filename: fallbackName,
+            file_type: ext,
+            reconstructed_text: fallbackText,
+            pages: pages,
+            statistics: {
+              total_pages: pages.length,
+              native_text_blocks: pages.reduce((acc, p) => acc + p.elements.length, 0),
+              ocr_text_blocks: 0,
+              pp_structure_regions: 0,
+              images_count: 0,
+              tables_count: 0,
+              formulas_count: 0,
+              textboxes_count: 0,
+              headers_count: 0,
+              footers_count: 0,
+              footnotes_count: 0,
+              possible_duplicates_count: 0,
+            },
+          };
+
+          if (!isCancelled) {
+            setJobId(syntheticJobId);
+            setResult(syntheticResult);
+            setIsLoading(false);
+            onClearLoadRequest?.();
+            return;
+          }
+        }
+
+        if (!isCancelled) {
+          setIsLoading(false);
+          onClearLoadRequest?.();
+        }
+      } catch (err: any) {
+        if (!isCancelled) {
+          console.error('Error restoring extraction:', err);
+          setIsLoading(false);
+          onClearLoadRequest?.();
+        }
+      }
+    };
+
+    loadRequestedData();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [loadRequest]);
+
   // Poll job status during extraction with fast 500ms intervals
   useEffect(() => {
     if (!jobId || !isLoading) return;
@@ -49,6 +241,10 @@ export const Home: React.FC<HomeProps> = ({ onNavigateToOriginality, onNavigate 
           setIsLoading(false);
           const finalResult = await getJobResults(jobId);
           setResult(finalResult);
+          try {
+            sessionStorage.removeItem('new_upload_mode');
+            sessionStorage.setItem('last_extraction_job_id', finalResult.job_id);
+          } catch (e) {}
           setCurrentPageIndex(0);
         } else if (status.status === 'failed') {
           setIsLoading(false);
@@ -86,6 +282,10 @@ export const Home: React.FC<HomeProps> = ({ onNavigateToOriginality, onNavigate 
     setCurrentPageIndex(0);
     leftPageRefs.current = [];
     rightPageRefs.current = [];
+    try {
+      sessionStorage.removeItem('last_extraction_job_id');
+      sessionStorage.setItem('new_upload_mode', 'true');
+    } catch (e) {}
   };
 
   const handleStartExtraction = async () => {

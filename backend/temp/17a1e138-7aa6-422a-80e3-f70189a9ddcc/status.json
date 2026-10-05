@@ -1,0 +1,12 @@
+{
+  "job_id": "17a1e138-7aa6-422a-80e3-f70189a9ddcc",
+  "filename": "257-278.pdf",
+  "file_type": "pdf",
+  "status": "completed",
+  "stage": "completed",
+  "progress": 100,
+  "current_page": 25,
+  "total_pages": 25,
+  "stage_message": "Successfully extracted 25 pages!",
+  "error": null
+}

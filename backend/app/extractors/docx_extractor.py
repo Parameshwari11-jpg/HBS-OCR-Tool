@@ -73,76 +73,54 @@ class DOCXExtractor:
                 pdf_success = True
                 
                 # Blend XML & MathType formulas from original DOCX into pages and text elements
+                # Generic approach: use extract_docx_xml_content to get paragraph_with_math lines
+                # in document order, then match against extracted elements by sequence.
+                # No hardcoded page numbers or pixel bounding boxes.
                 try:
-                    from app.extractors.mtef_decoder import extract_docx_mathtype_equations
-                    ole_texts = extract_docx_mathtype_equations(docx_path)
-                    res["statistics"].formulas_count += len(ole_texts)
+                    import re as _re
+                    from app.extractors.xml_extractor import extract_docx_xml_content
+
+                    xml_content = extract_docx_xml_content(docx_path)
+                    # Build ordered list of math paragraph lines from xml_extractor
+                    math_para_lines = [
+                        x['text'] for x in xml_content
+                        if x.get('type') == 'paragraph_with_math' and x.get('text')
+                    ]
 
                     def clean_str(s: str) -> str:
-                        import re
-                        return re.sub(r'\s+', ' ', s or '').strip()
+                        return _re.sub(r'\s+', ' ', s or '').strip()
 
-                    # Apply comprehensive in-place updates matching original document sequence
+                    # A pattern matching isolated number/operator fragments that are equation placeholders
+                    _frag_pat = _re.compile(r'^[\d\.\+\-\s]+$')
+                    # A pattern for elements that ARE real text (not math fragments)
+                    _real_text_pat = _re.compile(r'[a-zA-Z]{2,}')
+
+                    math_para_iter = iter(math_para_lines)
+
                     for p in res["pages"]:
-                        p_num = p.page
                         for elem in p.elements:
-                            t = clean_str(elem.text)
-                            bbox = elem.bbox
-                            y0 = bbox[1] if bbox else 0
+                            t = clean_str(elem.text or '')
 
-                            # Mark fragmented math bar artifacts from PDF font rendering
-                            import re
-                            if re.match(r'^[+\-−\s]+$', t):
+                            # Mark isolated operator/bar artifacts as duplicates
+                            if _re.match(r'^[+\-−\s]+$', t):
                                 elem.possible_duplicate = True
+                                continue
 
                             old_t = elem.text
-                            if p_num == 1:
-                                if 'represent polynomials where' in t:
-                                    elem.text = 'Let p, q, and r represent polynomials where q ≠ 0. Then,'
-                                elif ('1.' in t and '2.' in t) and y0 < 250:
-                                    eq2 = ole_texts.get('embeddings/oleObject2.bin', 'p/q + r/q = (p + r)/q')
-                                    eq3 = ole_texts.get('embeddings/oleObject3.bin', 'p/q - r/q = (p - r)/q')
-                                    elem.text = f"1. {eq2}      2. {eq3}"
-                                elif ('1.' in t and '2.' in t) and 390 < y0 < 450:
-                                    eq7 = ole_texts.get('embeddings/oleObject7.bin', '7/10 - 2/10')
-                                    eq8 = ole_texts.get('embeddings/oleObject8.bin', '3a/(a - 4) - (a + 8)/(a - 4)')
-                                    elem.text = f"1. {eq7}      2. {eq8}"
-                                elif 540 < y0 < 600 and ('3.' in t):
-                                    eq9 = ole_texts.get('embeddings/oleObject9.bin', '4c/(c + 5) + 20/(c + 5)')
-                                    eq10 = ole_texts.get('embeddings/oleObject10.bin', 'd^2/(d - 1) - (8d - 7)/(d - 1)')
-                                    elem.text = f"3. {eq9}      4. {eq10}"
-                                elif 540 < y0 < 600 and ('d d d' in t or t in ('4.', '4')):
+
+                            # If this element's text is a pure number/operator fragment placeholder
+                            # (e.g. '1.', '2.', '1. 2.', '3.', or a bare separator)
+                            # replace it with the next math paragraph line in sequence.
+                            if _frag_pat.match(t) and not _real_text_pat.search(t):
+                                try:
+                                    mp = next(math_para_iter)
+                                    elem.text = mp
+                                    elem.possible_duplicate = False
+                                except StopIteration:
                                     elem.possible_duplicate = True
+                                    continue
 
-                            elif p_num == 2:
-                                if 40 < y0 < 90 and ('6.' in t):
-                                    eq11 = ole_texts.get('embeddings/oleObject11.bin', 'c^2/(c - 6) - 36/(c - 6)')
-                                    eq12 = ole_texts.get('embeddings/oleObject12.bin', '4/(3x^2 + 2x - 8) - 3x/(3x^2 + 2x - 8)').replace('+ -', '-')
-                                    elem.text = f"5. {eq11}      6. {eq12}"
-                                elif 40 < y0 < 90 and (t in ('5.', '5') or 'c c c' in t):
-                                    elem.possible_duplicate = True
-                                elif 480 < y0 < 540 and ('7.' in t and '8.' in t):
-                                    eq13 = ole_texts.get('embeddings/oleObject13.bin', '4/(a^2b^4) + 2/(a^4b^3)')
-                                    eq14 = ole_texts.get('embeddings/oleObject14.bin', '4/(5t + 10) + 6/(t + 2)')
-                                    elem.text = f"7. {eq13}      8. {eq14}"
-
-                            elif p_num == 3:
-                                if 70 < y0 < 120 and ('9.' in t):
-                                    elem.text = f"9. {ole_texts.get('embeddings/oleObject15.bin', 'y/(y - 8) + 4/y')}"
-                                elif 70 < y0 < 120 and ('10.' in t):
-                                    elem.text = f"10. {ole_texts.get('embeddings/oleObject16.bin', '24/(m^2 - 4m) - 3m/(2m - 8)')}"
-                                elif 360 < y0 < 420 and ('11.' in t):
-                                    elem.text = f"11. {ole_texts.get('embeddings/oleObject17.bin', '3/(x^2 + 5x + 6) + 3/(x^2 + 7x + 12)')}"
-                                elif 360 < y0 < 420 and ('12.' in t):
-                                    elem.text = f"12. {ole_texts.get('embeddings/oleObject18.bin', '(p - 3)/(p^2 + 3p + 2) + (p - 1)/(p^2 - 4)')}"
-
-                            elif p_num == 4:
-                                if 90 < y0 < 140 and ('13.' in t):
-                                    elem.text = f"13. {ole_texts.get('embeddings/oleObject19.bin', '2/(c + 2) - 3/c + (c + 10)/(c^2 - 4)')}"
-                                elif elem.source in ('ocr', 'pp_structure') and ('23.c+10' in t or t in ('5', 'b+3', '2', 'b+1', 'b + 3', 'b + 1', 'perimeter')):
-                                    elem.possible_duplicate = True
-
-                            # If text was updated with equation content, synchronize classification and parameters
+                            # Synchronize classification when text changed
                             if elem.text != old_t:
                                 is_formula_elem = ('/' in elem.text or '=' in elem.text) and 'represent polynomials' not in elem.text
                                 c_info = TagClassifier.classify_element(
@@ -159,6 +137,10 @@ class DOCXExtractor:
                                 elem.is_tagged = c_info["is_tagged"]
                                 elem.tag_source = c_info["tag_source"]
                                 elem.parameters = c_info["parameters"]
+
+                    from app.layout.reading_order import sort_reading_order
+                    for p in res["pages"]:
+                        p.elements = sort_reading_order(p.elements, page_width=p.width)
 
                 except Exception as ex_xml:
                     logger.warning(f"Supplemental XML & MathType extraction error: {ex_xml}", exc_info=True)

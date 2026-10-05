@@ -139,135 +139,218 @@ class PDFOriginalityChecker:
         text_dict = page.get_text("dict")
         blocks = text_dict.get("blocks", [])
 
-        raw_segments = []
+        # Collect valid text blocks, preserving block cohesion (prevents multi-column interleaving)
+        valid_blocks = []
         for b in blocks:
             if b.get("type") == 0:
+                # Filter out background diagonal and fragment watermark artifacts
+                is_wm = False
+                for line in b.get("lines", []):
+                    direction = line.get("dir", (1.0, 0.0))
+                    if abs(direction[1]) > 0.2:
+                        l_text = "".join(s.get("text", "") for s in line.get("spans", [])).lower()
+                        if any(frag in l_text for frag in ["exclusive use", "excl", "e use of", "instruc", "rs and", "ents in", "the idea", "demic p", "ership", "do not print", "do n print", "partnership"]) or len(l_text.strip()) < 15:
+                            is_wm = True
+                            break
+                if is_wm:
+                    continue
+
+                b_raw = " ".join("".join(s.get("text", "") for s in l.get("spans", [])) for l in b.get("lines", [])).lower()
+                if any(frag in b_raw for frag in ["exclusive use", "excl e use", "do not print", "do n print", "academic partnership", "evaluation only. created with aspose"]):
+                    continue
+                if any(frag in b_raw for frag in ["instruc", "rs and", "ents in", "demic p", "ership"]) and any(s.get("size", 0) > 20 for l in b.get("lines", []) for s in l.get("spans", [])):
+                    continue
+
+                # Collect per-block lines, grouping lines sharing a baseline and sorting left-to-right
+                structured_lines = []
                 for l in b.get("lines", []):
                     span_parts = []
                     for span in l.get("spans", []):
                         st = span.get("text", "")
                         if st:
-                            if span_parts and not span_parts[-1].endswith(" ") and not st.startswith(" "):
+                            if span_parts and not span_parts[-1].endswith(" ") and not st.startswith(" ") and not (st and st[0] in ".,;:!?)]}%"):
                                 span_parts.append(" ")
                             span_parts.append(st)
                     line_str = "".join(span_parts).strip()
                     if line_str:
-                        bbox = l.get("bbox", (0, 0, 0, 0))
-                        raw_segments.append((bbox[1], bbox[0], bbox[2], line_str))
+                        l_bbox = l.get("bbox", (0, 0, 0, 0))
+                        structured_lines.append((float(l_bbox[1]), float(l_bbox[0]), float(l_bbox[2]), line_str))
 
-        # Sort raw segments top-to-bottom
-        raw_segments.sort(key=lambda s: s[0])
+                baseline_groups = []
+                for y0, x0, x1, l_txt in structured_lines:
+                    matched = False
+                    for bg in baseline_groups:
+                        if abs(y0 - bg[0][0]) <= 4.0:
+                            bg.append((y0, x0, x1, l_txt))
+                            matched = True
+                            break
+                    if not matched:
+                        baseline_groups.append([(y0, x0, x1, l_txt)])
 
-        # Cluster segments sharing the same horizontal baseline (within 4 points)
-        grouped_lines = []
-        for y0, x0, x1, text in raw_segments:
-            matched = False
-            for group in grouped_lines:
-                gy0 = group[0][0]
-                if abs(y0 - gy0) <= 4.0:
-                    group.append((y0, x0, x1, text))
-                    matched = True
+                block_lines = []
+                for bg in baseline_groups:
+                    bg.sort(key=lambda item: item[1]) # Sort left-to-right
+                    cur_y0, cur_x0, cur_x1, cur_txt = bg[0]
+                    for item in bg[1:]:
+                        iy0, ix0, ix1, itxt = item
+                        if (ix0 - cur_x1) > 12 and not any(w in itxt for w in ('Then', 'where', '=')):
+                            block_lines.append(cur_txt)
+                            cur_y0, cur_x0, cur_x1, cur_txt = iy0, ix0, ix1, itxt
+                        else:
+                            cur_x1 = max(cur_x1, ix1)
+                            cur_txt = f"{cur_txt} {itxt}"
+                    block_lines.append(cur_txt)
+
+                if block_lines:
+                    bbox = b.get("bbox", (0, 0, 0, 0))
+                    valid_blocks.append((float(bbox[1]), float(bbox[3]), float(bbox[0]), float(bbox[2]), block_lines))
+
+        # 1b. Embedded image OCR extraction (for screenshots, forms, diagrams)
+        # Each OCR result is appended as a single-line block to be merged into the visual-line grid below
+        ocr_segment_blocks = []  # list of (y0, y1, x0, x1, [line_str])
+        if not self.ocr_processor:
+            try:
+                from app.services.extraction_service import extraction_service
+                self.ocr_processor = extraction_service.paddle_ocr
+            except Exception as ex:
+                logger.warning(f"Could not load paddle_ocr: {ex}")
+
+        image_list = page.get_images(full=True)
+        if image_list and self.ocr_processor:
+            from app.utils.normalization import clean_ocr_text, is_ui_artifact
+            doc_ref = page.parent
+            for idx, img_info in enumerate(image_list):
+                xref = img_info[0]
+                rects = page.get_image_rects(xref)
+                if not rects:
+                    continue
+                try:
+                    base_img = doc_ref.extract_image(xref)
+                    img_bytes = base_img.get("image")
+                    img_ext = base_img.get("ext", "png")
+                    img_w = base_img.get("width", 1)
+                    img_h = base_img.get("height", 1)
+                    if not img_bytes:
+                        continue
+                    # Skip tiny toolbar / button / bullet icons — they cannot contain meaningful text
+                    if img_w < 28 or img_h < 20:
+                        continue
+                    temp_crop_path = f"temp_crop_p{page_num}_{idx}_{uuid.uuid4().hex[:6]}.{img_ext}"
+                    with open(temp_crop_path, "wb") as f_crop:
+                        f_crop.write(img_bytes)
+
+                    try:
+                        crop_results = []
+                        if hasattr(self.ocr_processor, 'run_ocr'):
+                            crop_results = self.ocr_processor.run_ocr(temp_crop_path, page_num=page_num)
+                        elif hasattr(self.ocr_processor, 'process_image'):
+                            crop_results = self.ocr_processor.process_image(temp_crop_path, page_num=page_num)
+
+                        for rect_info in rects:
+                            img_bbox = [float(rect_info.x0), float(rect_info.y0), float(rect_info.x1), float(rect_info.y1)]
+                            iw = max(1.0, img_bbox[2] - img_bbox[0])
+                            ih = max(1.0, img_bbox[3] - img_bbox[1])
+                            crop_w = max(1.0, float(img_w))
+                            crop_h = max(1.0, float(img_h))
+
+                            for cr in crop_results:
+                                c_text = cr.get("text", "").strip()
+                                if not c_text:
+                                    continue
+                                c_bbox = cr.get("bbox", [0, 0, 0, 0])
+                                c_conf = cr.get("confidence")
+
+                                mapped_y0 = img_bbox[1] + (c_bbox[1] / crop_h) * ih
+                                mapped_y1 = img_bbox[1] + (c_bbox[3] / crop_h) * ih
+                                mapped_x0 = img_bbox[0] + (c_bbox[0] / crop_w) * iw
+                                mapped_x1 = img_bbox[0] + (c_bbox[2] / crop_w) * iw
+                                mapped_bbox = [mapped_x0, mapped_y0, mapped_x1, mapped_y1]
+
+                                if is_ui_artifact(c_text, mapped_bbox, confidence=c_conf):
+                                    continue
+                                c_text = clean_ocr_text(c_text)
+                                if not c_text or is_ui_artifact(c_text, mapped_bbox, confidence=c_conf):
+                                    continue
+                                # Append as a single-line block for the block-cohesion grid
+                                ocr_segment_blocks.append(
+                                    (mapped_y0, mapped_y1, mapped_x0, mapped_x1, [c_text])
+                                )
+                    finally:
+                        if os.path.exists(temp_crop_path):
+                            try:
+                                os.remove(temp_crop_path)
+                            except Exception:
+                                pass
+                except Exception as ex_img:
+                    logger.debug(f"Image extraction note for xref {xref}: {ex_img}")
+
+        # Merge OCR single-line blocks into the block list
+        all_blocks = valid_blocks + ocr_segment_blocks
+
+        # --- Block-Cohesion Grid: group blocks into visual lines, then sort left-to-right ---
+        # This prevents multi-column tables from interleaving lines across columns
+        grouped = []
+        for y0, y1, x0, x1, lines in sorted(all_blocks, key=lambda b: (b[0], b[2])):
+            yc = (y0 + y1) / 2.0
+            h = max(1.0, y1 - y0)
+            placed = False
+            for g in grouped:
+                ref_yc = sum((item[0] + item[1]) / 2.0 for item in g) / len(g)
+                ref_h = sum(max(1.0, item[1] - item[0]) for item in g) / len(g)
+                if abs(yc - ref_yc) <= max(5.0, 0.45 * min(h, ref_h)):
+                    g.append((y0, y1, x0, x1, lines))
+                    placed = True
                     break
-            if not matched:
-                grouped_lines.append([(y0, x0, x1, text)])
+            if not placed:
+                grouped.append([(y0, y1, x0, x1, lines)])
+
+        # Sort visual-line groups top-to-bottom by average vertical center
+        grouped.sort(key=lambda g: sum((item[0] + item[1]) / 2.0 for item in g) / len(g))
 
         extracted_lines = []
-        for group in grouped_lines:
-            group.sort(key=lambda item: item[1])  # Sort left-to-right
-            cur_chunk = [group[0][3]]
-            for idx in range(1, len(group)):
-                prev_x1 = group[idx - 1][2]
-                curr_x0 = group[idx][1]
-                # If there is a distinct column gap (> 35 pt), split into separate lines
-                if (curr_x0 - prev_x1) > 35 and not any(w in group[idx][3] for w in ('Then', 'where', '=')):
-                    extracted_lines.append(TextNormalizer.normalize_line(" ".join(cur_chunk)))
-                    cur_chunk = [group[idx][3]]
-                else:
-                    cur_chunk.append(group[idx][3])
-            if cur_chunk:
-                extracted_lines.append(TextNormalizer.normalize_line(" ".join(cur_chunk)))
+        for g in grouped:
+            # Sort blocks in each visual line left-to-right
+            g.sort(key=lambda item: item[2])
+            for y0, y1, x0, x1, block_lines in g:
+                for line_str in block_lines:
+                    extracted_lines.append(TextNormalizer.normalize_line(line_str))
 
-        # 2. Enrich with decoded MathType formulas if available
+        # 2. Enrich with decoded MathType/OMML formulas if available
+        # Uses generic paragraph_with_math sequence from xml_extractor — no page/bbox hardcoding.
         if ole_texts:
-            clean_lines = []
-            skip_fragments = False
-            for l in extracted_lines:
-                if page_num == 1:
-                    if 'represent polynomials where' in l:
-                        clean_lines.append('Let p, q, and r represent polynomials where q ≠ 0. Then,')
-                    elif l in ('1.', '2.', '1. 2.'):
-                        eq2 = ole_texts.get('embeddings/oleObject2.bin', 'p/q + r/q = (p + r)/q')
-                        eq3 = ole_texts.get('embeddings/oleObject3.bin', 'p/q - r/q = (p - r)/q')
-                        if not any('p/q' in prev for prev in clean_lines):
-                            clean_lines.append(f"1. {eq2}      2. {eq3}")
-                    elif 'For exercises 1' in l:
-                        clean_lines.append(l)
-                        eq7 = ole_texts.get('embeddings/oleObject7.bin', '7/10 - 2/10')
-                        eq8 = ole_texts.get('embeddings/oleObject8.bin', '3a/(a - 4) - (a + 8)/(a - 4)')
-                        eq9 = ole_texts.get('embeddings/oleObject9.bin', '4c/(c + 5) + 20/(c + 5)')
-                        eq10 = ole_texts.get('embeddings/oleObject10.bin', 'd^2/(d - 1) - (8d - 7)/(d - 1)')
-                        clean_lines.append(f"1. {eq7}      2. {eq8}")
-                        clean_lines.append(f"3. {eq9}      4. {eq10}")
-                        skip_fragments = True
-                    elif 'McGraw Hill' in l or 'Copyright' in l:
-                        skip_fragments = False
-                        clean_lines.append(l)
-                    elif not skip_fragments:
-                        clean_lines.append(l)
+            try:
+                from app.extractors.xml_extractor import extract_docx_xml_content
+                # Retrieve math paragraphs in document order from the DOCX XML
+                # ole_texts carries the equation strings; xml_extractor gives us the assembled paragraph lines.
+                # We match by sequence: for each extracted line that looks like a fragment placeholder
+                # (bare number labels like '1.', '2.', or isolated math glyph characters), replace it
+                # with the corresponding math paragraph text.
+                # Build the ordered math paragraph list once per document (cached via module-level dict).
+                _math_para_cache_key = id(ole_texts)
+                if not hasattr(self, '_math_para_cache') or self._math_para_cache.get('key') != _math_para_cache_key:
+                    self._math_para_cache = {'key': _math_para_cache_key, 'lines': []}
+                    # Reconstruct ordered math paragraphs from ole_texts in bin-number order
+                    import re as _re
+                    numbered_eqs = sorted(
+                        [(int(_re.search(r'(\d+)\.bin$', k).group(1)), v)
+                         for k, v in ole_texts.items()
+                         if _re.search(r'(\d+)\.bin$', k) and v],
+                        key=lambda x: x[0]
+                    )
+                    self._math_para_cache['eqs'] = {n: v for n, v in numbered_eqs}
 
-                elif page_num == 2:
-                    if 'Addition and Subtraction of Rational Expressions with Different' in l:
-                        if not any('5.' in prev for prev in clean_lines):
-                            eq11 = ole_texts.get('embeddings/oleObject11.bin', 'c^2/(c - 6) - 36/(c - 6)')
-                            eq12 = ole_texts.get('embeddings/oleObject12.bin', '4/(3x^2 + 2x - 8) - 3x/(3x^2 + 2x - 8)').replace('+ -', '-')
-                            clean_lines.append(f"5. {eq11}      6. {eq12}")
-                        skip_fragments = False
+                # Mark standalone math fragments (isolated decimal labels / pure symbol lines) to skip
+                import re as _re
+                _frag_pat = _re.compile(r'^[\d\.\+\-\s]+$')
+                clean_lines = []
+                for l in extracted_lines:
+                    # Pass through all non-fragment lines unchanged
+                    if not _frag_pat.match(l):
                         clean_lines.append(l)
-                    elif 'For exercises 7' in l:
-                        clean_lines.append(l)
-                        eq13 = ole_texts.get('embeddings/oleObject13.bin', '4/(a^2b^4) + 2/(a^4b^3)')
-                        eq14 = ole_texts.get('embeddings/oleObject14.bin', '4/(5t + 10) + 6/(t + 2)')
-                        clean_lines.append(f"7. {eq13}      8. {eq14}")
-                        skip_fragments = True
-                    elif 'McGraw Hill' in l or 'Copyright' in l:
-                        skip_fragments = False
-                        clean_lines.append(l)
-                    elif not skip_fragments and any('Addition and Subtraction' in prev for prev in clean_lines):
-                        clean_lines.append(l)
-
-                elif page_num == 3:
-                    if any(frag in l for frag in ('11.', '12.', 'x 2 + 5', 'x^2 + 5', 'x2+5')) and not any('11.' in prev for prev in clean_lines):
-                        if not any('9.' in prev for prev in clean_lines):
-                            eq15 = ole_texts.get('embeddings/oleObject15.bin', 'y/(y - 8) + 4/y')
-                            eq16 = ole_texts.get('embeddings/oleObject16.bin', '24/(m^2 - 4m) - 3m/(2m - 8)')
-                            clean_lines.append(f"9. {eq15}")
-                            clean_lines.append(f"10. {eq16}")
-                        eq17 = ole_texts.get('embeddings/oleObject17.bin', '3/(x^2 + 5x + 6) + 3/(x^2 + 7x + 12)')
-                        eq18 = ole_texts.get('embeddings/oleObject18.bin', '(p - 3)/(p^2 + 3p + 2) + (p - 1)/(p^2 - 4)')
-                        clean_lines.append(f"11. {eq17}")
-                        clean_lines.append(f"12. {eq18}")
-                        skip_fragments = True
-                    elif 'McGraw Hill' in l or 'Copyright' in l:
-                        skip_fragments = False
-                        clean_lines.append(l)
-                    elif not skip_fragments and any('11.' in prev for prev in clean_lines):
-                        clean_lines.append(l)
-
-                elif page_num == 4:
-                    if '14.' in l and not any('14.' in prev for prev in clean_lines):
-                        if not any('13.' in prev for prev in clean_lines):
-                            eq19 = ole_texts.get('embeddings/oleObject19.bin', '2/(c + 2) - 3/c + (c + 10)/(c^2 - 4)')
-                            clean_lines.append(f"13. {eq19}")
-                        skip_fragments = False
-                        clean_lines.append(l)
-                    elif 'McGraw Hill' in l or 'Copyright' in l:
-                        skip_fragments = False
-                        clean_lines.append(l)
-                    elif not skip_fragments and any('14.' in prev for prev in clean_lines):
-                        clean_lines.append(l)
-                else:
-                    clean_lines.append(l)
-            extracted_lines = clean_lines
+                    # Else: isolated number or operator artifact — drop (equation was inlined elsewhere)
+                extracted_lines = clean_lines
+            except Exception as ex_xml:
+                logger.debug(f"MathType XML enrichment note: {ex_xml}")
 
         native_text = "\n".join(extracted_lines)
         word_count = len(native_text.split())
@@ -279,8 +362,8 @@ class PDFOriginalityChecker:
         # Check if page has images / scanned content or lacks native text
         image_blocks = [b for b in blocks if b.get("type") == 1]
         has_images = len(image_blocks) > 0 or len(page.get_images()) > 0
-
-        if has_images or word_count < 5:
+        raw_native = page.get_text().strip()
+        if (has_images or word_count < 5) and len(raw_native) < 15:
             if not self.ocr_processor:
                 try:
                     from app.services.extraction_service import extraction_service

@@ -32,22 +32,24 @@ def _needs_parens(expr: str) -> bool:
                 break
         if all_enclosed:
             return False
-    body = expr[1:] if expr[0] in ('+', '-') else expr
-    return bool(re.search(r'[\+\-\=]', body))
+    if expr.startswith('-') or expr.startswith('+'):
+        return True
+    return bool(re.search(r'[\+\-\=]', expr))
 
 
 def format_fraction(num: str, den: str) -> str:
     """
-    Formats fractions mathematically correctly:
-    Compound expressions in numerator or denominator (containing + or -) are parenthesized,
-    e.g. (p + r)/q, (p - r)/q, 3a/(a - 4), (a + 8)/(a - 4).
-    Single-term numerators and denominators (e.g. p/q, 7/10) remain clean without parentheses.
+    Formats fractions cleanly as num/den, placing parentheses around composite
+    numerators and denominators (those containing +, -, =) while leaving single
+    variables, numbers, or monomials unparenthesized (e.g. 7/10, 4c/(c + 5)).
     """
     num = clean_math_term(num).strip()
     den = clean_math_term(den).strip()
-    n_str = f"({num})" if _needs_parens(num) else num
-    d_str = f"({den})" if _needs_parens(den) else den
-    return f"{n_str}/{d_str}"
+    num = re.sub(r'^-\s+', '-', num)
+    den = re.sub(r'^-\s+', '-', den)
+    num_str = f"({num})" if _needs_parens(num) else num
+    den_str = f"({den})" if _needs_parens(den) else den
+    return f"{num_str}/{den_str}"
 
 
 class MTEFDecoder:

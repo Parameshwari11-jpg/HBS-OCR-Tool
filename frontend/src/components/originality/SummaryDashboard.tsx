@@ -12,6 +12,7 @@ import {
   Type,
   AlertOctagon,
   RefreshCw,
+  ArrowLeft,
 } from 'lucide-react';
 import { OriginalityReport, StatusType } from '../../types/originality';
 import { getReportPdfUrl, getReportJsonUrl, getReportCsvUrl } from '../../api/originalityApi';
@@ -20,12 +21,14 @@ interface SummaryDashboardProps {
   report: OriginalityReport;
   onReset: () => void;
   onOpenReportModal: () => void;
+  onBackToExtractor?: () => void;
 }
 
 export const SummaryDashboard: React.FC<SummaryDashboardProps> = ({
   report,
   onReset,
   onOpenReportModal,
+  onBackToExtractor,
 }) => {
   const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
 
@@ -158,6 +161,18 @@ export const SummaryDashboard: React.FC<SummaryDashboardProps> = ({
             <RefreshCw className="w-3.5 h-3.5" />
             <span>New Check</span>
           </button>
+
+          {onBackToExtractor && (
+            <button
+              type="button"
+              onClick={onBackToExtractor}
+              className="px-3.5 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 hover:text-white text-xs font-bold flex items-center space-x-1.5 transition border border-indigo-500/40 cursor-pointer shadow-sm group"
+              title="Return to the Extracted Text of this document"
+            >
+              <ArrowLeft className="w-3.5 h-3.5 text-indigo-400 group-hover:-translate-x-0.5 transition-transform" />
+              <span>Back to Extracted Text</span>
+            </button>
+          )}
         </div>
       </div>
 

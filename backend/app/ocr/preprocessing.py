@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from PIL import Image
+from typing import Union
 
 def preprocess_image_for_ocr(image_input: Union[str, np.ndarray, Image.Image]) -> np.ndarray:
     """Preprocess image to improve OCR accuracy."""

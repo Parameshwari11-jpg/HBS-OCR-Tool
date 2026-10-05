@@ -50,6 +50,15 @@ export async function getJobResults(job_id: string): Promise<ExtractionResult> {
   return res.json();
 }
 
+export async function lookupJobResults(filename?: string): Promise<ExtractionResult> {
+  const query = filename ? `?filename=${encodeURIComponent(filename)}` : '';
+  const res = await fetch(`${API_BASE}/api/results/lookup${query}`);
+  if (!res.ok) {
+    throw new Error('Failed to find extraction results');
+  }
+  return res.json();
+}
+
 export function getExportTxtUrl(job_id: string): string {
   return `${API_BASE}/api/export/${job_id}/txt`;
 }

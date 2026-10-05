@@ -13,6 +13,13 @@ async def get_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job ID not found")
     return job_status
 
+@router.get("/results/lookup")
+async def lookup_results(filename: str = ""):
+    result = job_service.find_latest_result(filename=filename if filename else None)
+    if not result:
+        raise HTTPException(status_code=404, detail="No matching extraction result found")
+    return result
+
 @router.get("/results/{job_id}")
 async def get_results(job_id: str):
     result = job_service.get_result(job_id)

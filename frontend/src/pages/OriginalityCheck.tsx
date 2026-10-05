@@ -25,7 +25,12 @@ interface OriginalityCheckProps {
   initialJobId?: string | null;
   initialOriginalFileName?: string | null;
   initialExtractedText?: string | null;
-  onBackToExtractor?: () => void;
+  onBackToExtractor?: (info?: {
+    jobId?: string;
+    filename?: string;
+    extractedText?: string;
+    action?: 'load_extracted' | 'new_upload';
+  }) => void;
 }
 
 export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
@@ -153,11 +158,16 @@ export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
             {onBackToExtractor && (
               <button
                 type="button"
-                onClick={onBackToExtractor}
-                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center space-x-1 transition cursor-pointer"
+                onClick={() =>
+                  onBackToExtractor({
+                    action: 'new_upload',
+                  })
+                }
+                className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white text-xs font-bold flex items-center space-x-1.5 transition border border-slate-700 hover:border-indigo-500/40 cursor-pointer shadow-sm group"
+                title="Return to Extractor to upload a new document"
               >
-                <ChevronLeft className="w-3.5 h-3.5" />
-                <span>Document Extractor</span>
+                <ChevronLeft className="w-4 h-4 text-indigo-400 group-hover:-translate-x-0.5 transition-transform" />
+                <span>Back to Extractor</span>
               </button>
             )}
             <div className="flex items-center space-x-2">
@@ -461,6 +471,14 @@ export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
               report={report}
               onReset={handleReset}
               onOpenReportModal={() => setIsReportModalOpen(true)}
+              onBackToExtractor={() =>
+                onBackToExtractor?.({
+                  jobId: report?.job_id || jobId || undefined,
+                  filename: report?.original_filename || originalDocName || originalFile?.name || undefined,
+                  extractedText: extractedText || undefined,
+                  action: 'load_extracted',
+                })
+              }
             />
 
             {/* Page-by-Page Selection List */}

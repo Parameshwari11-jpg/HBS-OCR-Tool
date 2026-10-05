@@ -11,17 +11,23 @@ def sort_reading_order(elements: List[ExtractedElement], page_width: float = 612
     if not elements:
         return elements
 
-    # Separate elements with bboxes and without bboxes
-    valid_elements = [e for e in elements if e.bbox and len(e.bbox) == 4]
+    # Separate elements with bboxes and text vs non-text or no bboxes
+    valid_elements = [
+        e for e in elements
+        if e.bbox and len(e.bbox) == 4
+    ]
+    # For layout clustering of reading lines, separate elements with non-empty text
+    text_elements = [e for e in valid_elements if e.text and e.text.strip()]
+    other_elements = [e for e in valid_elements if not (e.text and e.text.strip())]
     no_bbox_elements = [e for e in elements if not e.bbox or len(e.bbox) < 4]
 
-    if not valid_elements:
+    if not text_elements:
         for idx, elem in enumerate(elements):
             elem.reading_order = idx + 1
         return elements
 
     # Sort primarily by y0, then x0
-    sorted_elements = sorted(valid_elements, key=lambda e: (e.bbox[1], e.bbox[0]))
+    sorted_elements = sorted(text_elements, key=lambda e: (e.bbox[1], e.bbox[0]))
     lines: List[List[ExtractedElement]] = []
 
     for elem in sorted_elements:
@@ -32,7 +38,7 @@ def sort_reading_order(elements: List[ExtractedElement], page_width: float = 612
             ref_yc = sum((e.bbox[1] + e.bbox[3]) / 2.0 for e in line) / len(line)
             ref_h = sum((e.bbox[3] - e.bbox[1]) for e in line) / len(line)
             # Two elements are on the same line if their vertical centers are close
-            if abs(e_yc - ref_yc) <= max(4.0, 0.4 * min(e_h, ref_h)):
+            if abs(e_yc - ref_yc) <= max(5.0, 0.45 * min(e_h, ref_h)):
                 line.append(elem)
                 placed = True
                 break
@@ -48,10 +54,11 @@ def sort_reading_order(elements: List[ExtractedElement], page_width: float = 612
         line.sort(key=lambda e: e.bbox[0])
         sorted_valid.extend(line)
 
-    final_sorted = sorted_valid + no_bbox_elements
+    final_sorted = sorted_valid + other_elements + no_bbox_elements
 
     for idx, elem in enumerate(final_sorted):
         elem.reading_order = idx + 1
 
     return final_sorted
+
 

@@ -2,6 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Home } from './pages/Home';
 import { OriginalityCheck } from './pages/OriginalityCheck';
 
+export interface ExtractorLoadRequest {
+  jobId?: string;
+  filename?: string;
+  extractedText?: string;
+  action?: 'load_extracted' | 'new_upload';
+}
+
 export function App() {
   const [activeView, setActiveView] = useState<'extractor' | 'originality'>(() => {
     return window.location.hash === '#originality' ? 'originality' : 'extractor';
@@ -10,6 +17,7 @@ export function App() {
   const [origJobId, setOrigJobId] = useState<string | null>(null);
   const [origFilename, setOrigFilename] = useState<string | null>(null);
   const [origExtractedText, setOrigExtractedText] = useState<string | null>(null);
+  const [extractorLoadRequest, setExtractorLoadRequest] = useState<ExtractorLoadRequest | null>(null);
 
   // Sync view with URL hash
   useEffect(() => {
@@ -37,22 +45,32 @@ export function App() {
     handleNavigate('originality');
   };
 
-  if (activeView === 'originality') {
-    return (
-      <OriginalityCheck
-        initialJobId={origJobId}
-        initialOriginalFileName={origFilename}
-        initialExtractedText={origExtractedText}
-        onBackToExtractor={() => handleNavigate('extractor')}
-      />
-    );
-  }
+  const handleBackToExtractor = (info?: ExtractorLoadRequest) => {
+    if (info) {
+      setExtractorLoadRequest(info);
+    }
+    handleNavigate('extractor');
+  };
 
   return (
-    <Home
-      onNavigateToOriginality={handleNavigateToOriginality}
-      onNavigate={handleNavigate}
-    />
+    <>
+      <div style={{ display: activeView === 'extractor' ? 'block' : 'none' }}>
+        <Home
+          loadRequest={extractorLoadRequest}
+          onClearLoadRequest={() => setExtractorLoadRequest(null)}
+          onNavigateToOriginality={handleNavigateToOriginality}
+          onNavigate={handleNavigate}
+        />
+      </div>
+      {activeView === 'originality' && (
+        <OriginalityCheck
+          initialJobId={origJobId}
+          initialOriginalFileName={origFilename}
+          initialExtractedText={origExtractedText}
+          onBackToExtractor={handleBackToExtractor}
+        />
+      )}
+    </>
   );
 }
 

@@ -148,6 +148,28 @@ def is_ui_artifact(
         if (w <= 25 and h <= 25) or (conf_norm is not None and conf_norm < 0.80):
             return True
 
+    # 6. Standalone single non-word letter or noise glyph (e.g. 'C', 'c', 'v', 'x', 'o', 'e')
+    # Valid standalone single-letter words in English are 'a', 'A', 'I', but even these should not
+    # appear as isolated OCR results from embedded images unless they are toolbar labels or large icons.
+    # Any single letter that is NOT a digit, with low confidence or in a small button bbox is an artifact.
+    if len(raw_t) == 1 and not raw_t.isdigit():
+        if raw_t not in ('a', 'A', 'I'):
+            # Non-word single letter: confident threshold is 0.90
+            if conf_norm is not None and conf_norm < 0.90:
+                return True
+            if w <= 65 and h <= 65:
+                return True
+        else:
+            # 'a', 'A', 'I' — only allow if confidence >= 0.75 (very low conf = icon/glyph noise)
+            if conf_norm is not None and conf_norm < 0.75:
+                return True
+
+
+    # 7. Standalone short glyph/digit (<= 2 chars) in a small button icon box (w <= 35, h <= 35)
+    # e.g., window title bar pin/minimize/collapse/close icons misdetected as '4' or '11'
+    if len(raw_t) <= 2 and (w <= 35 and h <= 35 and box_area <= 1200):
+        return True
+
     return False
 
 def clean_leading_ocr_checkbox(text: str) -> str:
@@ -182,6 +204,23 @@ def clean_leading_ocr_checkbox(text: str) -> str:
 
     # 5. Checkbox tick/cross/square attached to all-caps word: 'vCHECK' -> 'CHECK', 'xAMOUNT' -> 'AMOUNT'
     text = re.sub(r'^[vxoVXO_]([A-Z]{3,}\b)', r'\1', text)
+
+    # 6. OCR bullet / arrow artifacts at line start:
+    # e.g., '> Napoleon Bonaparte' -> 'Napoleon Bonaparte'
+    # e.g., '. exchange names' -> 'exchange names'
+    # e.g., ': greet someone' -> 'greet someone'
+    # e.g., '. L\'Europe' -> 'L\'Europe'
+    # Preserves legitimate numbered lists: '1. Introduction', '1.2 Heading'
+    text = re.sub(r'^[>•·~–—]\s*', '', text)
+    text = re.sub(r'^[.:]\s+([A-Za-zÀ-ÿ])', r'\1', text)
+
+    # 7. Stray circular icon or bullet attached to start of capitalized word: 'OQue' -> 'Que'
+    text = re.sub(r'^[Oo]([A-Z][a-z]{2,})', r'\1', text)
+
+    # 8. Trailing duplicate or misplaced dots after punctuation: e.g. 'World!.' -> 'World!', 'shell..' -> 'shell.', 'photo?.' -> 'photo?'
+    # Only replaces exactly two dots (preserves legitimate ellipsis '...' and '....')
+    text = re.sub(r'([!?])\s*\.+$', r'\1', text)
+    text = re.sub(r'(?<!\.)\.\.(?!\.)$', '.', text)
 
     return text.strip()
 

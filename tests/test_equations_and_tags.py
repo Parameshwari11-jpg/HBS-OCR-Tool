@@ -32,7 +32,7 @@ class TestEquationsAndTags(unittest.TestCase):
         self.assertEqual(cls_prose["content_type"], "paragraph")
         self.assertEqual(cls_prose["tag"], "P")
 
-        eq = "1. p/q + r/q = p + r/q      2. p/q - r/q = p - r/q"
+        eq = "1. p/q + r/q = (p + r)/q      2. p/q - r/q = (p - r)/q"
         cls_eq = TagClassifier.classify_element(text=eq, source="docx_xml")
         self.assertEqual(cls_eq["content_type"], "formula")
         self.assertEqual(cls_eq["tag"], "Formula")

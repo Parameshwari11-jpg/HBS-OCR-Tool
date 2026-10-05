@@ -71,7 +71,7 @@ class ExtractionService:
                     if elem.text and elem.text.strip():
                         if is_ui_artifact(elem.text, elem.bbox, confidence=elem.confidence):
                             continue
-                        cleaned_txt = clean_ocr_text(elem.text)
+                        cleaned_txt = clean_ocr_text(elem.text) if elem.source == "ocr" else elem.text.strip()
                         if cleaned_txt and not is_ui_artifact(cleaned_txt, elem.bbox, confidence=elem.confidence):
                             reconstructed_lines.append(cleaned_txt)
                 reconstructed_lines.append("") # Blank line after page
