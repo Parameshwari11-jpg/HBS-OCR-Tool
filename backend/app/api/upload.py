@@ -1,13 +1,16 @@
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from app.utils.file_utils import validate_file_extension, generate_job_id, get_job_upload_path
+from app.utils.file_utils import validate_file_extension, generate_job_id, get_job_upload_path, cleanup_old_sessions
 from app.services.job_service import job_service
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
+    # Keep only the latest 2 sessions in temp and uploads
+    cleanup_old_sessions(max_keep=2)
+
     filename = file.filename or "document"
     if not validate_file_extension(filename):
         raise HTTPException(
