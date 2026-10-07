@@ -73,6 +73,8 @@ class TestPdfInjectionSpacing(unittest.TestCase):
         for pt, txt, fs, morph in items_to_inject:
             page.insert_text(pt, txt, fontsize=fs, render_mode=3, morph=morph)
 
+        page.clean_contents()
+
         extracted_text = page.get_text()
         raw_streams = [doc.xref_stream(s).decode("latin1", errors="ignore") for s in page.get_contents()]
         doc.close()

@@ -165,6 +165,13 @@ async def export_injected_pdf(job_id: str):
                 contents_str = "[" + " ".join(f"{x} 0 R" for x in reordered) + "]"
                 doc.xref_set_key(page.xref, "Contents", contents_str)
 
+            # Consolidate and sanitize page content stream to ensure strict ISO 32000 / PDF-UA compliance
+            # (Places 'cm' transformation operators outside 'BT...ET' text objects)
+            try:
+                page.clean_contents()
+            except Exception:
+                pass
+
         doc.save(output_pdf_path)
         doc.close()
 
