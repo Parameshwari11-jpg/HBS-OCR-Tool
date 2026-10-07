@@ -22,35 +22,35 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
     return true;
   });
 
-  const getStatusIcon = (status: StatusType) => {
+  const getStatusDot = (status: StatusType) => {
     switch (status) {
       case 'PASS':
-        return <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />;
+        return <span className="w-2 h-2 rounded-full bg-emerald-400" />;
       case 'WARNING':
-        return <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />;
+        return <span className="w-2 h-2 rounded-full bg-amber-400" />;
       case 'ERROR':
-        return <XCircle className="w-3.5 h-3.5 text-rose-400" />;
+        return <span className="w-2 h-2 rounded-full bg-rose-400" />;
     }
   };
 
   const getStatusBadgeClass = (status: StatusType, isSelected: boolean) => {
     if (isSelected) {
-      return 'bg-indigo-600 border-indigo-400 text-white shadow-md shadow-indigo-600/30';
+      return 'bg-indigo-600 border-indigo-500 text-white shadow-md shadow-indigo-600/20';
     }
     switch (status) {
       case 'PASS':
-        return 'bg-slate-900 border-slate-800 text-slate-300 hover:border-emerald-500/50 hover:bg-emerald-950/20';
+        return 'bg-slate-950/80 border-slate-800/80 text-slate-300 hover:border-slate-700 hover:bg-slate-900';
       case 'WARNING':
-        return 'bg-slate-900 border-amber-500/40 text-amber-300 hover:bg-amber-950/30';
+        return 'bg-slate-950/80 border-amber-500/30 text-amber-300 hover:border-amber-500/50';
       case 'ERROR':
-        return 'bg-slate-900 border-rose-500/50 text-rose-300 hover:bg-rose-950/30 ring-1 ring-rose-500/20';
+        return 'bg-slate-950/80 border-rose-500/40 text-rose-300 hover:border-rose-500/60';
     }
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
-      {/* Top Header: Navigation Controls & Filter Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+    <div className="bg-slate-900/90 border border-slate-800/90 rounded-2xl p-4 shadow-xl backdrop-blur-sm space-y-3">
+      {/* Navigation Header & Filter Segment */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
         <div className="flex items-center space-x-2">
           <h4 className="text-xs font-bold text-white uppercase tracking-wider">
             Page-Wise Verification
@@ -60,13 +60,13 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
           </span>
         </div>
 
-        {/* Filters */}
-        <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 p-0.5 rounded-lg text-xs">
+        {/* Filter Segment Control */}
+        <div className="flex items-center bg-slate-950 border border-slate-800 p-0.5 rounded-lg text-xs font-medium">
           <button
             type="button"
             onClick={() => setFilter('all')}
-            className={`px-2 py-0.5 rounded transition cursor-pointer font-medium ${
-              filter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+            className={`px-2.5 py-1 rounded transition cursor-pointer ${
+              filter === 'all' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             All ({pages.length})
@@ -74,8 +74,8 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
           <button
             type="button"
             onClick={() => setFilter('errors')}
-            className={`px-2 py-0.5 rounded transition cursor-pointer font-medium ${
-              filter === 'errors' ? 'bg-rose-900/60 text-rose-300 border border-rose-500/30' : 'text-rose-400/80 hover:text-rose-300'
+            className={`px-2.5 py-1 rounded transition cursor-pointer ${
+              filter === 'errors' ? 'bg-rose-950/60 text-rose-300 border border-rose-500/30' : 'text-slate-400 hover:text-rose-300'
             }`}
           >
             Errors ({pages.filter((p) => p.status === 'ERROR').length})
@@ -83,8 +83,8 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
           <button
             type="button"
             onClick={() => setFilter('warnings')}
-            className={`px-2 py-0.5 rounded transition cursor-pointer font-medium ${
-              filter === 'warnings' ? 'bg-amber-900/60 text-amber-300 border border-amber-500/30' : 'text-amber-400/80 hover:text-amber-300'
+            className={`px-2.5 py-1 rounded transition cursor-pointer ${
+              filter === 'warnings' ? 'bg-amber-950/60 text-amber-300 border border-amber-500/30' : 'text-slate-400 hover:text-amber-300'
             }`}
           >
             Warnings ({pages.filter((p) => p.status === 'WARNING').length})
@@ -92,8 +92,8 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
           <button
             type="button"
             onClick={() => setFilter('passed')}
-            className={`px-2 py-0.5 rounded transition cursor-pointer font-medium ${
-              filter === 'passed' ? 'bg-emerald-900/60 text-emerald-300 border border-emerald-500/30' : 'text-emerald-400/80 hover:text-emerald-300'
+            className={`px-2.5 py-1 rounded transition cursor-pointer ${
+              filter === 'passed' ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/30' : 'text-slate-400 hover:text-emerald-300'
             }`}
           >
             Passed ({pages.filter((p) => p.status === 'PASS').length})
@@ -111,7 +111,7 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
           >
             <ChevronLeft className="w-3.5 h-3.5" />
           </button>
-          <span className="px-2 font-mono text-[11px] text-slate-300">
+          <span className="px-2 font-mono text-[11px] text-slate-300 font-medium">
             Page {pages[selectedPageIndex]?.page || 1} of {pages.length}
           </span>
           <button
@@ -126,7 +126,7 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
         </div>
       </div>
 
-      {/* Horizontal Page Pills Scroll */}
+      {/* Sleek Horizontal Page Tab Pills */}
       <div className="flex items-center space-x-2 overflow-x-auto no-scrollbar py-1">
         {filteredPages.map(({ p, originalIdx }) => {
           const isSelected = selectedPageIndex === originalIdx;
@@ -137,21 +137,21 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
               key={p.page}
               type="button"
               onClick={() => onSelectPage(originalIdx)}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center space-x-2 transition-all cursor-pointer whitespace-nowrap ${badgeClass}`}
+              className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center space-x-2 transition-all cursor-pointer whitespace-nowrap ${badgeClass}`}
             >
-              {getStatusIcon(p.status)}
+              {getStatusDot(p.status)}
               <span>Page {p.page}</span>
-              <span className="font-mono text-[10px] opacity-80">
+              <span className="font-mono text-[10px] opacity-85">
                 {p.accuracy}%
               </span>
               {p.mismatches.length > 0 && (
                 <span
-                  className={`text-[9px] px-1.5 py-0.2 rounded-full ${
+                  className={`text-[9px] px-1.5 py-0.2 rounded-full font-medium ${
                     isSelected
                       ? 'bg-white/20 text-white'
                       : p.status === 'ERROR'
-                      ? 'bg-rose-500/20 text-rose-300'
-                      : 'bg-amber-500/20 text-amber-300'
+                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                   }`}
                 >
                   {p.mismatches.length} {p.mismatches.length === 1 ? 'diff' : 'diffs'}
@@ -164,3 +164,4 @@ export const PageAccuracyList: React.FC<PageAccuracyListProps> = ({
     </div>
   );
 };
+

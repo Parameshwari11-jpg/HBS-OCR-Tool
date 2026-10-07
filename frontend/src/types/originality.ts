@@ -60,6 +60,7 @@ export interface PageOriginalityResult {
   mismatches: MismatchItem[];
   orig_lines: string[];
   extracted_lines: string[];
+  line_positions?: { top: number; height: number; left?: number; width?: number }[];
   line_diffs: LineDiffItem[];
 }
 

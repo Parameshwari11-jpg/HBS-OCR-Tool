@@ -38,12 +38,29 @@ async def get_page_preview(job_id: str, page_num: int):
         raise HTTPException(status_code=404, detail=f"Page preview for page {page_num} not found")
     return FileResponse(path=page_img_path, media_type="image/png")
 
-@router.get("/image/{job_id}/{image_filename}")
+@router.get("/image/{job_id}/{image_filename:path}")
 async def get_extracted_image(job_id: str, image_filename: str):
     temp_dir = get_job_temp_dir(job_id)
+    
+    # 1. Check exact subpath if image is saved inside subdirectories (e.g. original_images or extracted_images)
     img_path = temp_dir / image_filename
+    
+    # 2. Fallback check: look in root of temp_dir or any subdirectory by basename
     if not img_path.exists():
-        raise HTTPException(status_code=404, detail=f"Image {image_filename} not found")
+        base_name = os.path.basename(image_filename)
+        candidates = [
+            temp_dir / base_name,
+            temp_dir / "original_images" / base_name,
+            temp_dir / "extracted_images" / base_name,
+        ]
+        found = False
+        for cand in candidates:
+            if cand.exists():
+                img_path = cand
+                found = True
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail=f"Image {image_filename} not found")
     
     ext = img_path.suffix.lower()
     media_type = "image/png"

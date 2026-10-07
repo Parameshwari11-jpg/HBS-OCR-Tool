@@ -61,8 +61,26 @@ class ExtractionService:
             reconstructed_lines = []
             for p in pages:
                 reconstructed_lines.append(f"--- Page {p.page} ---")
-                valid_elems = [e for e in p.elements if not e.possible_duplicate and e.type not in ("image", "figure")]
-                sorted_elems = sorted(valid_elems, key=lambda e: (
+                
+                # Format table headers/rows into text for table elements
+                for elem in p.elements:
+                    if elem.type == 'table' and not elem.text:
+                        formatted_table_lines = []
+                        if elem.headers and any(str(h).strip() for h in elem.headers):
+                            formatted_table_lines.append("   ".join(str(h).strip() for h in elem.headers if str(h).strip()))
+                        if elem.rows:
+                            for r in elem.rows:
+                                row_str = "   ".join(str(c).strip() for c in r if str(c).strip())
+                                if row_str:
+                                    formatted_table_lines.append(row_str)
+                        if formatted_table_lines:
+                            elem.text = "\n".join(formatted_table_lines)
+
+                valid_elems = [e for e in p.elements if e.type not in ("image", "figure")]
+                non_dup_elems = [e for e in valid_elems if not e.possible_duplicate and e.text and e.text.strip()]
+                target_elems = non_dup_elems if len(non_dup_elems) > 0 else [e for e in valid_elems if e.text and e.text.strip()]
+
+                sorted_elems = sorted(target_elems, key=lambda e: (
                     e.reading_order if e.reading_order is not None and e.reading_order > 0 else 99999,
                     e.bbox[1] if e.bbox else 99999,
                     e.bbox[0] if e.bbox else 99999

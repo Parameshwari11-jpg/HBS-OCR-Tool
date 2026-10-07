@@ -115,11 +115,6 @@ export const MismatchDetails: React.FC<MismatchDetailsProps> = ({ mismatches, pa
                   </div>
 
                   <div className="flex items-center space-x-2">
-                    {m.confidence !== undefined && m.confidence !== null && (
-                      <span className="text-[10px] font-mono text-slate-400">
-                        Conf: {(m.confidence * 100).toFixed(0)}%
-                      </span>
-                    )}
                     <span
                       className={`text-[9px] px-2 py-0.5 rounded-full font-bold border ${sevInfo.bg}`}
                     >

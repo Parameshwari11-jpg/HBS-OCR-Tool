@@ -404,11 +404,6 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
                                 <span className={`text-[9px] px-1 rounded ${elem.is_tagged ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-500'}`}>
                                   {elem.is_tagged ? 'Tagged' : 'Inferred'}
                                 </span>
-                                {elem.confidence !== undefined && (
-                                  <span className="text-[10px] font-mono text-emerald-400">
-                                    {(elem.confidence > 1 ? elem.confidence : elem.confidence * 100).toFixed(0)}%
-                                  </span>
-                                )}
                               </div>
                               <span
                                 className={`text-[10px] flex items-center space-x-0.5 ${
@@ -529,11 +524,6 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
                           <div className="flex items-center justify-between text-[11px] mb-1">
                             <div className="flex items-center space-x-2">
                               <span className="font-semibold text-emerald-400">Page {elem.page} • PaddleOCR</span>
-                              {elem.confidence !== undefined && (
-                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                                  {elem.confidence}% conf
-                                </span>
-                              )}
                             </div>
                             {elem.possible_duplicate && (
                               <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 text-[10px] font-semibold flex items-center space-x-1">

@@ -82,3 +82,14 @@ export function getReportJsonUrl(reportId: string): string {
 export function getReportCsvUrl(reportId: string): string {
   return `${API_BASE}/api/originality/report/${reportId}/csv`;
 }
+
+export async function injectInvisibleText(reportId: string): Promise<Blob> {
+  const res = await fetch(`${API_BASE}/api/originality/inject-invisible-text/${reportId}`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ detail: 'Failed to inject invisible text' }));
+    throw new Error(errorData.detail || 'Failed to inject invisible text');
+  }
+  return res.blob();
+}

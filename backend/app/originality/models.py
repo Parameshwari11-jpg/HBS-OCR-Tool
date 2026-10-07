@@ -77,6 +77,7 @@ class PageOriginalityResult(BaseModel):
     mismatches: List[MismatchItem] = Field(default_factory=list)
     orig_lines: List[str] = Field(default_factory=list)
     extracted_lines: List[str] = Field(default_factory=list)
+    line_positions: List[Dict[str, float]] = Field(default_factory=list)
     line_diffs: List[LineDiffItem] = Field(default_factory=list)
 
 
@@ -89,6 +90,7 @@ class OriginalityReport(BaseModel):
     overall_accuracy: float
     verification_status: StatusType
     job_id: Optional[str] = None
+    original_doc_path: Optional[str] = None
     preview_available: bool = True
     total_pages: int
     passed_pages: int

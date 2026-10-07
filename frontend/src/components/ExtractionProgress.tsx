@@ -147,12 +147,7 @@ export const ExtractionProgress: React.FC<ExtractionProgressProps> = ({ status }
         ))}
       </div>
 
-      {/* Reassurance Footer Tip */}
-      <div className="flex items-center space-x-2 pt-1 text-[11px] text-slate-400/90 italic">
-        <span>
-          Extracting normal text, textboxes, MathType equations, tables, and images while preserving 100% original visual layout.
-        </span>
-      </div>
+
     </div>
   );
 };

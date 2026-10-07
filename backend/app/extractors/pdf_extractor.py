@@ -119,94 +119,216 @@ class PDFExtractor:
             median_body_size = TagClassifier.compute_median_font_size(page_font_sizes, fallback=11.0)
             total_native_chars = 0
 
-            for b in blocks:
-                if b.get("type") != 0:
+            # Pre-detect horizontal fraction lines from PDF drawings
+            drawings = page.get_drawings()
+            frac_bars = [
+                (d["rect"].x0, (d["rect"].y0 + d["rect"].y1) / 2.0, d["rect"].x1, d["rect"].y0, d["rect"].y1)
+                for d in drawings
+                if abs(d["rect"].y1 - d["rect"].y0) <= 3.0 and 5.0 <= (d["rect"].x1 - d["rect"].x0) <= 65.0
+            ]
+
+            valid_blocks = [b for b in blocks if b.get("type") == 0]
+            clusters = []
+            assigned = set()
+
+            for i, b in enumerate(valid_blocks):
+                if i in assigned:
+                    continue
+                bb = b.get("bbox", (0, 0, 0, 0))
+                has_bar = any(bb[0] - 5 <= fb[0] and fb[2] <= bb[2] + 5 and bb[1] - 5 <= fb[1] <= bb[3] + 5 for fb in frac_bars)
+                if not has_bar:
+                    clusters.append([b])
+                    assigned.add(i)
                     continue
 
+                row_group = [i]
+                assigned.add(i)
+                for j, ob in enumerate(valid_blocks):
+                    if j in assigned:
+                        continue
+                    obb = ob.get("bbox", (0, 0, 0, 0))
+                    v_overlap = max(0.0, min(bb[3], obb[3]) - max(bb[1], obb[1]))
+                    if v_overlap > 3.0:
+                        row_group.append(j)
+                        assigned.add(j)
+                clusters.append([valid_blocks[k] for k in row_group])
+
+            for cl in clusters:
                 # Filter out background diagonal and fragment watermark artifacts
-                is_wm = False
-                for line in b.get("lines", []):
-                    direction = line.get("dir", (1.0, 0.0))
-                    if abs(direction[1]) > 0.2:
-                        l_text = "".join(s.get("text", "") for s in line.get("spans", [])).lower()
-                        if any(frag in l_text for frag in ["exclusive use", "excl", "e use of", "instruc", "rs and", "ents in", "the idea", "demic p", "ership", "do not print", "do n print", "partnership"]) or len(l_text.strip()) < 15:
-                            is_wm = True
-                            break
-                if is_wm:
+                cl_is_wm = False
+                for b in cl:
+                    for line in b.get("lines", []):
+                        direction = line.get("dir", (1.0, 0.0))
+                        if abs(direction[1]) > 0.2:
+                            l_text = "".join(s.get("text", "") for s in line.get("spans", [])).lower()
+                            if any(frag in l_text for frag in ["exclusive use", "excl", "e use of", "instruc", "rs and", "ents in", "the idea", "demic p", "ership", "do not print", "do n print", "partnership"]) or len(l_text.strip()) < 15:
+                                cl_is_wm = True
+                                break
+                    if cl_is_wm:
+                        break
+                if cl_is_wm:
                     continue
 
-                b_raw = " ".join("".join(s.get("text", "") for s in l.get("spans", [])) for l in b.get("lines", [])).lower()
+                b_raw = " ".join("".join(s.get("text", "") for s in l.get("spans", [])) for b in cl for l in b.get("lines", [])).lower()
                 if any(frag in b_raw for frag in ["exclusive use", "excl e use", "do not print", "do n print", "academic partnership", "evaluation only. created with aspose"]):
                     continue
-                if any(frag in b_raw for frag in ["instruc", "rs and", "ents in", "demic p", "ership"]) and any(s.get("size", 0) > 20 for l in b.get("lines", []) for s in l.get("spans", [])):
+                if any(frag in b_raw for frag in ["instruc", "rs and", "ents in", "demic p", "ership"]) and any(s.get("size", 0) > 20 for b in cl for l in b.get("lines", []) for s in l.get("spans", [])):
                     continue
 
-                lines = b.get("lines", [])
-                block_lines_text = []
                 span_fonts = []
                 span_sizes = []
                 span_colors = []
                 span_bolds = []
                 span_italics = []
 
-                structured_lines = []
-                for line in lines:
-                    line_spans = line.get("spans", [])
-                    span_parts = []
-                    for s in line_spans:
-                        st = s.get("text", "")
-                        if st:
-                            if span_parts and not span_parts[-1].endswith(" ") and not st.startswith(" ") and not (st and st[0] in ".,;:!?)]}%"):
-                                span_parts.append(" ")
-                            span_parts.append(st)
-                    line_str = "".join(span_parts).strip()
-                    if line_str:
-                        l_bbox = line.get("bbox", (0, 0, 0, 0))
-                        structured_lines.append((float(l_bbox[1]), float(l_bbox[0]), float(l_bbox[2]), line_str))
-                    for s in line_spans:
-                        s_text = s.get("text", "").strip()
-                        if s_text:
-                            s_font = s.get("font", "")
-                            s_size = float(s.get("size", 11.0))
-                            s_flags = int(s.get("flags", 0))
-                            s_color = int(s.get("color", 0))
+                for b in cl:
+                    for line in b.get("lines", []):
+                        for s in line.get("spans", []):
+                            s_text = s.get("text", "").strip()
+                            if s_text:
+                                s_font = s.get("font", "")
+                                s_size = float(s.get("size", 11.0))
+                                s_flags = int(s.get("flags", 0))
+                                s_color = int(s.get("color", 0))
 
-                            span_fonts.append(s_font)
-                            span_sizes.append(s_size)
-                            span_colors.append(s_color)
-                            is_b = bool((s_flags & 16) or ('bold' in s_font.lower()) or ('black' in s_font.lower()) or ('heavy' in s_font.lower()))
-                            is_i = bool((s_flags & 2) or ('italic' in s_font.lower()) or ('oblique' in s_font.lower()))
-                            span_bolds.append(is_b)
-                            span_italics.append(is_i)
+                                span_fonts.append(s_font)
+                                span_sizes.append(s_size)
+                                span_colors.append(s_color)
+                                is_b = bool((s_flags & 16) or ('bold' in s_font.lower()) or ('black' in s_font.lower()) or ('heavy' in s_font.lower()))
+                                is_i = bool((s_flags & 2) or ('italic' in s_font.lower()) or ('oblique' in s_font.lower()))
+                                span_bolds.append(is_b)
+                                span_italics.append(is_i)
 
-                # Group lines by baseline (y0 within 4pt) and sort each baseline left-to-right by x0
-                baseline_groups = []
-                for y0, x0, x1, l_txt in structured_lines:
-                    matched = False
+                # Check if this cluster contains fraction bars
+                cl_bars = []
+                for fb in frac_bars:
+                    if any(b["bbox"][0] - 5 <= fb[0] and fb[2] <= b["bbox"][2] + 5 and b["bbox"][1] - 5 <= fb[1] <= b["bbox"][3] + 5 for b in cl):
+                        cl_bars.append(fb)
+
+                if cl_bars:
+                    comb_spans = []
+                    for b in cl:
+                        for l in b.get("lines", []):
+                            for s in l.get("spans", []):
+                                if s.get("text", "").strip():
+                                    comb_spans.append(s)
+
+                    used_span_ids = set()
+                    frac_items = []
+                    for fb in cl_bars:
+                        x0, y_bar, x1, ry0, ry1 = fb
+                        num_spans = []
+                        den_spans = []
+                        for idx, s in enumerate(comb_spans):
+                            sb = s["bbox"]
+                            overlap = max(0.0, min(x1, sb[2]) - max(x0, sb[0]))
+                            span_w = max(1.0, sb[2] - sb[0])
+                            if overlap / span_w >= 0.4 or (sb[0] >= x0 - 3 and sb[2] <= x1 + 3):
+                                if (y_bar - 22) <= sb[3] <= (y_bar + 2):
+                                    num_spans.append((idx, s))
+                                elif (y_bar - 2) <= sb[1] <= (y_bar + 22):
+                                    den_spans.append((idx, s))
+
+                        if not num_spans and not den_spans:
+                            continue
+
+                        num_spans.sort(key=lambda item: item[1]["bbox"][0])
+                        den_spans.sort(key=lambda item: item[1]["bbox"][0])
+
+                        def format_tokens(span_list):
+                            tokens = []
+                            for idx_s, (_, s) in enumerate(span_list):
+                                if idx_s > 0 and s.get("size", 11) < span_list[idx_s - 1][1].get("size", 11) * 0.85 and s.get("origin", (0, 0))[1] < span_list[idx_s - 1][1].get("origin", (0, 0))[1] - 2:
+                                    tokens.append("^" + s.get("text", "").strip())
+                                else:
+                                    tokens.append(s.get("text", "").strip())
+                            return "".join(tokens).strip()
+
+                        num_txt = format_tokens(num_spans)
+                        den_txt = format_tokens(den_spans)
+                        # Clean parentheses - only enclose if contains operators (+, -, −)
+                        clean_num = f"({num_txt})" if any(c in num_txt for c in "+-\u2212") else num_txt
+                        clean_den = f"({den_txt})" if any(c in den_txt for c in "+-\u2212") else den_txt
+                        frac_str = f"{clean_num}/{clean_den}" if den_txt else num_txt
+                        min_x = min([x0] + [s["bbox"][0] for _, s in num_spans + den_spans])
+                        max_x = max([x1] + [s["bbox"][2] for _, s in num_spans + den_spans])
+                        frac_items.append((y_bar, min_x, max_x, frac_str))
+                        for idx, _ in num_spans + den_spans:
+                            used_span_ids.add(idx)
+
+                    comb_items = frac_items + [
+                        ((s["bbox"][1] + s["bbox"][3]) / 2.0, s["bbox"][0], s["bbox"][2], s.get("text", "").strip())
+                        for idx, s in enumerate(comb_spans)
+                        if idx not in used_span_ids
+                    ]
+                    comb_items.sort(key=lambda it: it[1])
+                    line_parts = []
+                    for it in comb_items:
+                        t = it[3]
+                        if line_parts and not line_parts[-1].endswith(" ") and not t.startswith(" "):
+                            if t in ["+", "−", "-"] or line_parts[-1] in ["+", "−", "-"]:
+                                line_parts.append(" ")
+                            elif t in ["1.", "2.", "3.", "4."] or line_parts[-1].endswith("."):
+                                line_parts.append("   ")
+                            else:
+                                line_parts.append(" ")
+                        line_parts.append(t)
+                    text_clean = "".join(line_parts).strip()
+                else:
+                    # Regular text block handling
+                    lines = [line for b in cl for line in b.get("lines", [])]
+                    from app.utils.spacing_engine import merge_tokens as merge_span_tokens
+                    structured_lines = []
+                    for line in lines:
+                        line_spans = [s for s in line.get("spans", []) if s.get("text", "")]
+                        if not line_spans:
+                            continue
+                        span_texts = [s.get("text", "") for s in line_spans]
+                        # Compute horizontal coordinate gaps and font sizes between adjacent spans
+                        coord_gaps = []
+                        font_sizes = []
+                        for idx_sp in range(len(line_spans) - 1):
+                            s_cur = line_spans[idx_sp]
+                            s_next = line_spans[idx_sp + 1]
+                            b_cur = s_cur.get("bbox", (0, 0, 0, 0))
+                            b_next = s_next.get("bbox", (0, 0, 0, 0))
+                            coord_gaps.append(float(b_next[0] - b_cur[2]))
+                            font_sizes.append(float(s_cur.get("size", 10.0)))
+
+                        line_str = merge_span_tokens(span_texts, coord_gaps=coord_gaps, font_sizes=font_sizes).strip()
+                        if line_str:
+                            l_bbox = line.get("bbox", (0, 0, 0, 0))
+                            structured_lines.append((float(l_bbox[1]), float(l_bbox[0]), float(l_bbox[2]), line_str))
+
+                    baseline_groups = []
+                    for item in sorted(structured_lines, key=lambda i: (i[0], i[1])):
+                        y0, x0, x1, l_txt = item
+                        matched = False
+                        for bg in baseline_groups:
+                            if abs(y0 - bg[0][0]) <= 8.0:
+                                bg.append(item)
+                                matched = True
+                                break
+                        if not matched:
+                            baseline_groups.append([item])
+
+                    merged_block_lines = []
                     for bg in baseline_groups:
-                        if abs(y0 - bg[0][0]) <= 4.0:
-                            bg.append((y0, x0, x1, l_txt))
-                            matched = True
-                            break
-                    if not matched:
-                        baseline_groups.append([(y0, x0, x1, l_txt)])
+                        bg.sort(key=lambda item: item[1])
+                        cur_y0, cur_x0, cur_x1, cur_txt = bg[0]
+                        for item in bg[1:]:
+                            iy0, ix0, ix1, itxt = item
+                            gap = ix0 - cur_x1
+                            if gap > 180 and not any(w in itxt for w in ("Then", "where", "=")) and not cur_txt.endswith(("+", "-", "=", "*", "/")):
+                                merged_block_lines.append((cur_y0, cur_x0, cur_x1, cur_txt))
+                                cur_y0, cur_x0, cur_x1, cur_txt = iy0, ix0, ix1, itxt
+                            else:
+                                cur_x1 = max(cur_x1, ix1)
+                                spacer = "   " if gap > 15 else " "
+                                cur_txt = f"{cur_txt}{spacer}{itxt}" if not cur_txt.endswith(" ") else f"{cur_txt}{itxt}"
+                        merged_block_lines.append((cur_y0, cur_x0, cur_x1, cur_txt))
 
-                # Assemble block lines, keeping separate lines when gap > 12 pt
-                merged_block_lines = []
-                for bg in baseline_groups:
-                    bg.sort(key=lambda item: item[1]) # Sort left-to-right by x0
-                    cur_y0, cur_x0, cur_x1, cur_txt = bg[0]
-                    for item in bg[1:]:
-                        iy0, ix0, ix1, itxt = item
-                        if (ix0 - cur_x1) > 12 and not any(w in itxt for w in ('Then', 'where', '=')):
-                            merged_block_lines.append((cur_y0, cur_x0, cur_x1, cur_txt))
-                            cur_y0, cur_x0, cur_x1, cur_txt = iy0, ix0, ix1, itxt
-                        else:
-                            cur_x1 = max(cur_x1, ix1)
-                            cur_txt = f"{cur_txt} {itxt}"
-                    merged_block_lines.append((cur_y0, cur_x0, cur_x1, cur_txt))
-
-                text_clean = "\n".join(item[3] for item in merged_block_lines).strip()
+                    text_clean = "\n".join(item[3] for item in merged_block_lines).strip()
                 if not text_clean:
                     continue
 
@@ -216,7 +338,11 @@ class PDFExtractor:
                     continue
 
                 total_native_chars += len(text_clean)
-                bbox = [float(b["bbox"][0]), float(b["bbox"][1]), float(b["bbox"][2]), float(b["bbox"][3])]
+                cl_x0 = min(float(b["bbox"][0]) for b in cl)
+                cl_y0 = min(float(b["bbox"][1]) for b in cl)
+                cl_x1 = max(float(b["bbox"][2]) for b in cl)
+                cl_y1 = max(float(b["bbox"][3]) for b in cl)
+                bbox = [cl_x0, cl_y0, cl_x1, cl_y1]
 
                 dominant_font = max(set(span_fonts), key=span_fonts.count) if span_fonts else "Arial"
                 dominant_size = round(sum(span_sizes) / max(1, len(span_sizes)), 1) if span_sizes else median_body_size
@@ -293,6 +419,16 @@ class PDFExtractor:
                         source="native"
                     )
 
+                    # Generate text representation for downstream text extraction / originality check
+                    table_text_lines = []
+                    if headers and any(h.strip() for h in headers):
+                        table_text_lines.append(" | ".join(h.strip() for h in headers if h.strip()))
+                    for r in rows:
+                        row_vals = [c.strip() for c in r if c and c.strip()]
+                        if row_vals:
+                            table_text_lines.append(" | ".join(row_vals))
+                    table_full_text = "\n".join(table_text_lines).strip()
+
                     elements.append(ExtractedElement(
                         id=f"table_p{page_num}_{t_idx+1}",
                         page=page_num,
@@ -304,6 +440,7 @@ class PDFExtractor:
                         parameters=tbl_classification["parameters"],
                         source="native",
                         bbox=tab_bbox,
+                        text=table_full_text,
                         headers=headers,
                         rows=rows,
                         confidence=1.0
@@ -313,7 +450,9 @@ class PDFExtractor:
             except Exception as ex_tab:
                 logger.debug(f"Native table extraction note: {ex_tab}")
 
-            # Step 3 — Extract All PDF Images (Normal & MathType images)
+            # Step 3 — Extract All PDF Images (Normal & MathType images) into original_images/
+            orig_images_dir = os.path.join(temp_dir, "original_images")
+            os.makedirs(orig_images_dir, exist_ok=True)
             image_list = page.get_images(full=True)
             saved_images: List[Dict[str, Any]] = []
 
@@ -332,11 +471,16 @@ class PDFExtractor:
                     img_w = base_image.get("width", 0)
                     img_h = base_image.get("height", 0)
                     img_filename = f"pdf_img_p{page_num}_{img_idx+1}.{image_ext}"
-                    img_save_path = os.path.join(temp_dir, img_filename)
+                    img_save_path = os.path.join(orig_images_dir, img_filename)
                     if image_bytes:
                         with open(img_save_path, "wb") as f:
                             f.write(image_bytes)
-                        img_url = f"/api/image/{job_id}/{img_filename}"
+                        # Also maintain root copy for backward compatibility
+                        root_copy_path = os.path.join(temp_dir, img_filename)
+                        if not os.path.exists(root_copy_path):
+                            with open(root_copy_path, "wb") as f_root:
+                                f_root.write(image_bytes)
+                        img_url = f"/api/image/{job_id}/original_images/{img_filename}"
                 except Exception as ex:
                     logger.warning(f"Could not extract image bytes for xref {xref}: {ex}")
 
@@ -363,7 +507,7 @@ class PDFExtractor:
                         page=page_num,
                         type="image",
                         content_type="image",
-                        tag="Figure",
+                        tag="Image",
                         is_tagged=True,
                         tag_source="native",
                         parameters=img_classification["parameters"],
@@ -455,6 +599,14 @@ class PDFExtractor:
                                     upscaled_path = s_img["path"] + "_upscaled.png"
                                     padded_im.save(upscaled_path)
                                     img_path_for_ocr = upscaled_path
+                                elif max(w_im, h_im) < 700:
+                                    # For medium graphs/charts, a clean 1.5x Lanczos upscale resolves fine axis labels (like '0' at coordinate origins)
+                                    scale_factor = 1.5
+                                    scale_m = 1.5
+                                    upscaled_im = test_im.resize((int(w_im * scale_factor), int(h_im * scale_factor)), Image.Resampling.LANCZOS)
+                                    upscaled_path = s_img["path"] + "_upscaled.png"
+                                    upscaled_im.save(upscaled_path)
+                                    img_path_for_ocr = upscaled_path
                         except Exception:
                             img_path_for_ocr = s_img["path"]
 
@@ -463,12 +615,17 @@ class PDFExtractor:
                         img_bbox = s_img["bbox"]
                         iw = max(1.0, img_bbox[2] - img_bbox[0])
                         ih = max(1.0, img_bbox[3] - img_bbox[1])
-                        crop_w = max(1.0, float(s_img["width"]))
-                        crop_h = max(1.0, float(s_img["height"]))
 
-                        pad_b = 15.0 if scale_m > 1.0 else 0.0
-                        scaled_w = max(1.0, crop_w * scale_m)
-                        scaled_h = max(1.0, crop_h * scale_m)
+                        # Determine actual dimensions of the image supplied to OCR engine
+                        try:
+                            with Image.open(img_path_for_ocr) as ocr_im:
+                                actual_w, actual_h = ocr_im.size
+                        except Exception:
+                            actual_w = max(1, int(s_img["width"]))
+                            actual_h = max(1, int(s_img["height"]))
+
+                        actual_w = max(1.0, float(actual_w))
+                        actual_h = max(1.0, float(actual_h))
 
                         for crop_res in crop_results:
                             crop_text = crop_res.get("text", "").strip()
@@ -477,10 +634,10 @@ class PDFExtractor:
                             c_bbox = crop_res.get("bbox", [0, 0, 0, 0])
                             crop_conf = crop_res.get("confidence")
 
-                            norm_x0 = max(0.0, (c_bbox[0] - pad_b) / scaled_w)
-                            norm_y0 = max(0.0, (c_bbox[1] - pad_b) / scaled_h)
-                            norm_x1 = min(1.0, (c_bbox[2] - pad_b) / scaled_w)
-                            norm_y1 = min(1.0, (c_bbox[3] - pad_b) / scaled_h)
+                            norm_x0 = max(0.0, min(1.0, c_bbox[0] / actual_w))
+                            norm_y0 = max(0.0, min(1.0, c_bbox[1] / actual_h))
+                            norm_x1 = max(norm_x0, min(1.0, c_bbox[2] / actual_w))
+                            norm_y1 = max(norm_y0, min(1.0, c_bbox[3] / actual_h))
 
                             mapped_bbox = [
                                 img_bbox[0] + norm_x0 * iw,
@@ -506,6 +663,25 @@ class PDFExtractor:
                                 source="ocr"
                             )
 
+                            # Save the extracted snippet into extracted_images/ directory
+                            extracted_images_dir = os.path.join(temp_dir, "extracted_images")
+                            os.makedirs(extracted_images_dir, exist_ok=True)
+                            crop_elem_filename = f"extracted_p{page_num}_{elem_counter}.png"
+                            crop_save_path = os.path.join(extracted_images_dir, crop_elem_filename)
+                            crop_img_url = f"/api/image/{job_id}/extracted_images/{crop_elem_filename}"
+
+                            try:
+                                with Image.open(s_img["path"]) as orig_im:
+                                    cw, ch = orig_im.size
+                                    c_x0 = max(0, int(norm_x0 * cw))
+                                    c_y0 = max(0, int(norm_y0 * ch))
+                                    c_x1 = min(cw, max(c_x0 + 1, int(norm_x1 * cw)))
+                                    c_y1 = min(ch, max(c_y0 + 1, int(norm_y1 * ch)))
+                                    snippet = orig_im.crop((c_x0, c_y0, c_x1, c_y1))
+                                    snippet.save(crop_save_path)
+                            except Exception:
+                                crop_img_url = None
+
                             elements.append(ExtractedElement(
                                 id=f"ocr_img_p{page_num}_{elem_counter}",
                                 page=page_num,
@@ -518,7 +694,9 @@ class PDFExtractor:
                                 source="ocr",
                                 text=crop_text,
                                 confidence=crop_res.get("confidence"),
-                                bbox=mapped_bbox
+                                bbox=mapped_bbox,
+                                image_id=f"ext_img_p{page_num}_{elem_counter}",
+                                image_path=crop_img_url
                             ))
                             elem_counter += 1
                             if crop_classification["content_type"] == "formula":

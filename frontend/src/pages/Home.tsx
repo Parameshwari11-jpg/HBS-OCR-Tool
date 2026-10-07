@@ -10,19 +10,24 @@ import { uploadFile, startExtraction, getJobStatus, getJobResults, lookupJobResu
 import { ExtractionJobStatus, ExtractionResult, ExtractedElement } from '../types/extraction';
 import { ExtractorLoadRequest } from '../App';
 import { AlertCircle, RefreshCw, FileText, FileCode, ShieldCheck } from 'lucide-react';
+import { OriginalityPromptModal } from '../components/originality/OriginalityPromptModal';
 
 interface HomeProps {
   loadRequest?: ExtractorLoadRequest | null;
   onClearLoadRequest?: () => void;
   onNavigateToOriginality?: (jobId: string, filename: string, extractedText?: string) => void;
+  onNavigateToNewOriginality?: () => void;
   onNavigate?: (view: 'extractor' | 'originality') => void;
+  hasVisitedOriginality?: boolean;
 }
 
 export const Home: React.FC<HomeProps> = ({
   loadRequest,
   onClearLoadRequest,
   onNavigateToOriginality,
+  onNavigateToNewOriginality,
   onNavigate,
+  hasVisitedOriginality,
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -31,6 +36,7 @@ export const Home: React.FC<HomeProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedElement, setSelectedElement] = useState<ExtractedElement | null>(null);
+  const [isOriginalityModalOpen, setIsOriginalityModalOpen] = useState(false);
 
   // Synchronized Scrolling and Page Navigation State
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
@@ -331,6 +337,41 @@ export const Home: React.FC<HomeProps> = ({
     }
   };
 
+  const handleHardReload = async () => {
+    // If we have the selected file object, re-start extraction directly
+    if (selectedFile) {
+      await handleStartExtraction();
+      return;
+    }
+
+    // If we have an existing jobId from backend, re-trigger extraction on it directly
+    const currentJobId = jobId || result?.job_id;
+    if (currentJobId && !currentJobId.startsWith('imported_')) {
+      setIsLoading(true);
+      setErrorMessage(null);
+      setResult(null);
+      setJobStatus({
+        job_id: currentJobId,
+        filename: result?.filename || 'Document',
+        file_type: result?.file_type || 'pdf',
+        status: 'processing',
+        stage: 'parsing',
+        progress: 15,
+        stage_message: 'Hard reloading: Re-extracting document layout & text...',
+      });
+      try {
+        await startExtraction(currentJobId);
+      } catch (err: any) {
+        setIsLoading(false);
+        setErrorMessage(err.message || 'Failed to re-extract document.');
+      }
+      return;
+    }
+
+    // Fallback: full browser hard reload if no state is preserved
+    window.location.reload();
+  };
+
   const handleReset = () => {
     handleRemoveFile();
   };
@@ -445,9 +486,33 @@ export const Home: React.FC<HomeProps> = ({
     syncScroll('right', 'left');
   };
 
+  const handleOpenOriginalityCheck = () => {
+    // If a document is loaded or extracted, show confirmation popup explaining requirement
+    if (result || selectedFile) {
+      setIsOriginalityModalOpen(true);
+    } else {
+      onNavigate?.('originality');
+    }
+  };
+
+  const handleConfirmOriginalityNavigation = () => {
+    if (result) {
+      onNavigateToOriginality?.(result.job_id, result.filename, result.reconstructed_text);
+    } else {
+      onNavigate?.('originality');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      <Header activeView="extractor" onNavigate={onNavigate} />
+      <Header
+        activeView="extractor"
+        onNavigate={onNavigate}
+        onCheckOriginalityClick={handleOpenOriginalityCheck}
+        onHardReload={handleHardReload}
+        isReloading={isLoading}
+        onNewExtraction={result || selectedFile ? handleReset : undefined}
+      />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         {/* Upload Section */}
@@ -490,26 +555,31 @@ export const Home: React.FC<HomeProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5">
-                {/* PROMINENT CHECK ORIGINALITY BUTTON */}
+                {/* RETURN TO ORIGINALITY REPORT BUTTON - Only shown when user has checked originality and navigated back to text */}
+                {hasVisitedOriginality && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigate?.('originality')}
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-bold flex items-center space-x-2 transition shadow-lg shadow-indigo-950/40 border border-indigo-400/40 cursor-pointer transform hover:-translate-y-0.5 active:translate-y-0"
+                    title="Return to your generated Originality Verification Report"
+                  >
+                    <ShieldCheck className="w-4 h-4 text-indigo-200" />
+                    <span>BACK TO ORIGINALITY REPORT</span>
+                  </button>
+                )}
+
+                {/* CHECK ORIGINALITY BUTTON */}
                 <button
                   type="button"
-                  onClick={() => onNavigateToOriginality?.(result.job_id, result.filename, result.reconstructed_text)}
+                  onClick={handleOpenOriginalityCheck}
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white text-xs font-bold flex items-center space-x-2 transition shadow-lg shadow-emerald-950/40 border border-emerald-400/40 cursor-pointer transform hover:-translate-y-0.5 active:translate-y-0"
                   title="Verify if extracted text accurately matches the original document"
                 >
                   <ShieldCheck className="w-4 h-4 text-emerald-200" />
-                  <span>CHECK ORIGINALITY</span>
+                  <span>{hasVisitedOriginality ? 'RE-RUN CHECK' : 'CHECK ORIGINALITY'}</span>
                 </button>
 
-                <ExportButtons jobId={result.job_id} />
-
-                <button
-                  onClick={handleReset}
-                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center space-x-1.5 transition border border-slate-700 cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>New Extraction</span>
-                </button>
+                <ExportButtons jobId={result.job_id} filename={result.filename} />
               </div>
             </div>
 
@@ -578,6 +648,20 @@ export const Home: React.FC<HomeProps> = ({
           </div>
         )}
       </main>
+
+      <OriginalityPromptModal
+        isOpen={isOriginalityModalOpen}
+        onClose={() => setIsOriginalityModalOpen(false)}
+        onConfirm={handleConfirmOriginalityNavigation}
+        onConfirmNewVerification={() => {
+          if (onNavigateToNewOriginality) {
+            onNavigateToNewOriginality();
+          } else {
+            onNavigate?.('originality');
+          }
+        }}
+        filename={result?.filename || selectedFile?.name}
+      />
 
       <footer className="border-t border-slate-900 bg-slate-950 py-4 text-center text-xs text-slate-500">
         Text Extractor Tool • Built with FastAPI, PaddleOCR & React

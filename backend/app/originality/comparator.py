@@ -58,7 +58,8 @@ class OriginalityComparator:
             pages = self.pdf_checker.check_pdf(
                 pdf_path=original_file_path,
                 extracted_text=extracted_text,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                job_id=job_id
             )
         elif file_ext in (".docx", ".doc"):
             file_type = "docx"
@@ -74,7 +75,8 @@ class OriginalityComparator:
                     pdf_path=converted_pdf_path,
                     extracted_text=extracted_text,
                     progress_callback=progress_callback,
-                    docx_source_path=original_file_path
+                    docx_source_path=original_file_path,
+                    job_id=job_id
                 )
             else:
                 # 2. Try direct PyMuPDF page-by-page verification for Word documents
@@ -87,7 +89,8 @@ class OriginalityComparator:
                             pdf_path=original_file_path,
                             extracted_text=extracted_text,
                             progress_callback=progress_callback,
-                            docx_source_path=original_file_path
+                            docx_source_path=original_file_path,
+                            job_id=job_id
                         )
                     else:
                         pages = self.docx_checker.check_docx(
@@ -178,6 +181,7 @@ class OriginalityComparator:
         report = OriginalityReport(
             report_id=report_id,
             job_id=job_id,
+            original_doc_path=original_file_path,
             preview_available=True,
             original_filename=orig_fn,
             extracted_filename=ext_fn,

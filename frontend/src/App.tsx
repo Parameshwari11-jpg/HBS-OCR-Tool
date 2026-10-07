@@ -18,12 +18,14 @@ export function App() {
   const [origFilename, setOrigFilename] = useState<string | null>(null);
   const [origExtractedText, setOrigExtractedText] = useState<string | null>(null);
   const [extractorLoadRequest, setExtractorLoadRequest] = useState<ExtractorLoadRequest | null>(null);
+  const [hasVisitedOriginality, setHasVisitedOriginality] = useState<boolean>(false);
 
   // Sync view with URL hash
   useEffect(() => {
     const handleHashChange = () => {
       if (window.location.hash === '#originality') {
         setActiveView('originality');
+        setHasVisitedOriginality(true);
       } else {
         setActiveView('extractor');
       }
@@ -34,6 +36,9 @@ export function App() {
   }, []);
 
   const handleNavigate = (view: 'extractor' | 'originality') => {
+    if (view === 'originality') {
+      setHasVisitedOriginality(true);
+    }
     setActiveView(view);
     window.location.hash = view === 'originality' ? '#originality' : '#extractor';
   };
@@ -42,6 +47,15 @@ export function App() {
     setOrigJobId(jobId);
     setOrigFilename(filename);
     setOrigExtractedText(extractedText || null);
+    setHasVisitedOriginality(true);
+    handleNavigate('originality');
+  };
+
+  const handleNavigateToNewOriginality = () => {
+    setOrigJobId(null);
+    setOrigFilename(null);
+    setOrigExtractedText(null);
+    setHasVisitedOriginality(true);
     handleNavigate('originality');
   };
 
@@ -59,15 +73,19 @@ export function App() {
           loadRequest={extractorLoadRequest}
           onClearLoadRequest={() => setExtractorLoadRequest(null)}
           onNavigateToOriginality={handleNavigateToOriginality}
+          onNavigateToNewOriginality={handleNavigateToNewOriginality}
           onNavigate={handleNavigate}
+          hasVisitedOriginality={hasVisitedOriginality}
         />
       </div>
       {activeView === 'originality' && (
         <OriginalityCheck
+          key={`${origJobId || 'new'}-${origFilename || 'empty'}`}
           initialJobId={origJobId}
           initialOriginalFileName={origFilename}
           initialExtractedText={origExtractedText}
           onBackToExtractor={handleBackToExtractor}
+          onNewVerification={handleNavigateToNewOriginality}
         />
       )}
     </>

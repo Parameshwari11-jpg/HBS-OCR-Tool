@@ -106,8 +106,9 @@ def extract_docx_xml_content(docx_file_path: str) -> List[Dict[str, Any]]:
                                 p_parts.append(f" {m_str} ")
                                 has_math = True
 
-                    full_line = "".join(p_parts).strip()
-                    full_line = re.sub(r'\s+', ' ', full_line)
+                    from app.utils.spacing_engine import merge_tokens as merge_xml_tokens
+                    raw_line = merge_xml_tokens(p_parts).strip() if p_parts else ""
+                    full_line = re.sub(r'\s+', ' ', raw_line)
                     if full_line and has_math:
                         results.append({
                             "id": f"docx_math_p_{p_idx+1}",

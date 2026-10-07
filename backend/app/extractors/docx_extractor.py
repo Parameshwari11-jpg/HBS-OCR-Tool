@@ -108,17 +108,19 @@ class DOCXExtractor:
 
                             old_t = elem.text
 
-                            # If this element's text is a pure number/operator fragment placeholder
-                            # (e.g. '1.', '2.', '1. 2.', '3.', or a bare separator)
-                            # replace it with the next math paragraph line in sequence.
-                            if _frag_pat.match(t) and not _real_text_pat.search(t):
+                            # If this element's text is a pure operator fragment or equation marker placeholder
+                            # (do NOT overwrite numbers/scores like '83', '76', '96'), replace with math paragraph line if available.
+                            is_pure_num = t.replace('.', '', 1).isdigit()
+                            if _frag_pat.match(t) and not _real_text_pat.search(t) and not is_pure_num:
                                 try:
                                     mp = next(math_para_iter)
                                     elem.text = mp
                                     elem.possible_duplicate = False
                                 except StopIteration:
-                                    elem.possible_duplicate = True
-                                    continue
+                                    elem.possible_duplicate = False
+                            elif is_pure_num:
+                                # Ensure valid numbers (e.g. test scores) are preserved as active elements
+                                elem.possible_duplicate = False
 
                             # Synchronize classification when text changed
                             if elem.text != old_t:
@@ -189,22 +191,30 @@ class DOCXExtractor:
                     original_name = os.path.basename(media_file)
                     ext = os.path.splitext(original_name)[1].lower()
                     
-                    raw_temp_path = os.path.join(temp_dir, f"raw_{original_name}")
+                    orig_images_dir = os.path.join(temp_dir, "original_images")
+                    os.makedirs(orig_images_dir, exist_ok=True)
+                    raw_temp_path = os.path.join(orig_images_dir, f"raw_{original_name}")
                     with open(raw_temp_path, "wb") as f:
                         f.write(raw_bytes)
 
                     base_name = f"docx_img_{img_counter}"
-                    web_img_filename, img_w, img_h = convert_to_web_image(raw_temp_path, temp_dir, base_name)
-                    final_img_path = os.path.join(temp_dir, web_img_filename)
+                    web_img_filename, img_w, img_h = convert_to_web_image(raw_temp_path, orig_images_dir, base_name)
+                    final_img_path = os.path.join(orig_images_dir, web_img_filename)
+                    # Maintain root copy for backward compatibility
+                    root_copy_path = os.path.join(temp_dir, web_img_filename)
+                    if not os.path.exists(root_copy_path) and os.path.exists(final_img_path):
+                        import shutil
+                        shutil.copy2(final_img_path, root_copy_path)
 
                     is_mathtype = ext in ('.wmf', '.emf') or 'equation' in original_name.lower() or 'ole' in original_name.lower()
                     elem_type = "formula" if is_mathtype else "image"
                     img_id = f"mathtype_{img_counter}" if is_mathtype else f"image_{img_counter}"
-                    image_api_url = f"/api/image/{job_id}/{web_img_filename}"
+                    image_api_url = f"/api/image/{job_id}/original_images/{web_img_filename}"
 
                     elements.append(ExtractedElement(
                         id=f"docx_media_{elem_counter}",
                         type=elem_type,
+                        tag="Image",
                         source="docx",
                         page=1,
                         image_id=img_id,
@@ -248,8 +258,14 @@ class DOCXExtractor:
             logger.error(f"Error extracting word/media images: {e}")
 
         # Paragraphs & Runs
+        from app.utils.spacing_engine import merge_tokens as merge_run_tokens
         for p_idx, p in enumerate(doc.paragraphs):
-            text = p.text.strip()
+            # If paragraph has multiple runs, ensure spaces are not lost across runs
+            run_texts = [r.text for r in p.runs if r.text]
+            if len(run_texts) > 1:
+                text = merge_run_tokens(run_texts).strip()
+            else:
+                text = p.text.strip()
             if not text:
                 continue
 
@@ -324,6 +340,16 @@ class DOCXExtractor:
                 source="docx"
             )
 
+            # Generate text representation for downstream text extraction / originality check
+            table_text_lines = []
+            if headers and any(h.strip() for h in headers):
+                table_text_lines.append(" | ".join(h.strip() for h in headers if h.strip()))
+            for r in rows:
+                row_vals = [c.strip() for c in r if c and c.strip()]
+                if row_vals:
+                    table_text_lines.append(" | ".join(row_vals))
+            table_full_text = "\n".join(table_text_lines).strip()
+
             elements.append(ExtractedElement(
                 id=f"docx_tbl_{elem_counter}",
                 type="table",
@@ -334,6 +360,7 @@ class DOCXExtractor:
                 parameters=tbl_classification["parameters"],
                 source="docx",
                 page=1,
+                text=table_full_text,
                 rows=table_rows,
                 headers=headers,
                 reading_order=elem_counter,

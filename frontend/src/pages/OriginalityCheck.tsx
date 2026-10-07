@@ -15,6 +15,8 @@ import {
 } from 'lucide-react';
 import { OriginalityReport, DocumentMetadata } from '../types/originality';
 import { checkOriginality, inspectMetadata } from '../api/originalityApi';
+import { getJobResults } from '../api/extractionApi';
+import { PageData } from '../types/extraction';
 import { SummaryDashboard } from '../components/originality/SummaryDashboard';
 import { PageAccuracyList } from '../components/originality/PageAccuracyList';
 import { DifferenceViewer } from '../components/originality/DifferenceViewer';
@@ -31,6 +33,7 @@ interface OriginalityCheckProps {
     extractedText?: string;
     action?: 'load_extracted' | 'new_upload';
   }) => void;
+  onNewVerification?: () => void;
 }
 
 export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
@@ -38,6 +41,7 @@ export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
   initialOriginalFileName,
   initialExtractedText,
   onBackToExtractor,
+  onNewVerification,
 }) => {
   // File & Input State
   const [originalFile, setOriginalFile] = useState<File | null>(null);
@@ -46,6 +50,7 @@ export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
   const [originalDocName, setOriginalDocName] = useState<string>(initialOriginalFileName || '');
   const [extractedText, setExtractedText] = useState<string>(initialExtractedText || '');
   const [originalMeta, setOriginalMeta] = useState<DocumentMetadata | null>(null);
+  const [extractionPages, setExtractionPages] = useState<PageData[] | null>(null);
 
   // Comparison State
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -55,12 +60,25 @@ export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
   const [selectedPageIndex, setSelectedPageIndex] = useState<number>(0);
   const [isReportModalOpen, setIsReportModalOpen] = useState<boolean>(false);
 
-  // Sync initial props
+  // Sync initial props & fetch extraction element bboxes for interactive matching
   useEffect(() => {
     if (initialJobId) setJobId(initialJobId);
     if (initialOriginalFileName) setOriginalDocName(initialOriginalFileName);
     if (initialExtractedText) setExtractedText(initialExtractedText);
   }, [initialJobId, initialOriginalFileName, initialExtractedText]);
+
+  useEffect(() => {
+    const activeJId = jobId || report?.job_id;
+    if (activeJId) {
+      getJobResults(activeJId)
+        .then((res) => {
+          if (res && res.pages) {
+            setExtractionPages(res.pages);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [jobId, report?.job_id]);
 
   // Handle Original File Upload & Metadata Inspection
   const handleOriginalFileSelect = async (file: File) => {
@@ -160,14 +178,14 @@ export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
                 type="button"
                 onClick={() =>
                   onBackToExtractor({
-                    action: 'new_upload',
+                    action: 'load_extracted',
                   })
                 }
                 className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white text-xs font-bold flex items-center space-x-1.5 transition border border-slate-700 hover:border-indigo-500/40 cursor-pointer shadow-sm group"
-                title="Return to Extractor to upload a new document"
+                title="Return to Extracted Text view"
               >
                 <ChevronLeft className="w-4 h-4 text-indigo-400 group-hover:-translate-x-0.5 transition-transform" />
-                <span>Back to Extractor</span>
+                <span>Back to Text</span>
               </button>
             )}
             <div className="flex items-center space-x-2">
@@ -180,21 +198,49 @@ export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
             </div>
           </div>
 
-          {/* Workflow Stepper Indicator */}
-          <div className="hidden md:flex items-center space-x-2 text-[11px] font-medium text-slate-400">
-            <span className="text-slate-500">1. Extract</span>
-            <span>&rarr;</span>
-            <span className="text-indigo-400 font-bold bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/30">
-              2. Check Originality
-            </span>
-            <span>&rarr;</span>
-            <span className={report ? 'text-indigo-400 font-bold' : 'text-slate-500'}>
-              3. Review Differences
-            </span>
-            <span>&rarr;</span>
-            <span className={report ? 'text-indigo-400 font-bold' : 'text-slate-500'}>
-              4. Generate Report
-            </span>
+          {/* Actions & Workflow Stepper Indicator */}
+          <div className="flex items-center space-x-3">
+            {(originalDocName || extractedText || report) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOriginalFile(null);
+                  setExtractedFile(null);
+                  setJobId(null);
+                  setOriginalDocName('');
+                  setExtractedText('');
+                  setOriginalMeta(null);
+                  setExtractionPages(null);
+                  setReport(null);
+                  setErrorMessage(null);
+                  setSelectedPageIndex(0);
+                  if (onNewVerification) {
+                    onNewVerification();
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold flex items-center space-x-1.5 transition border border-slate-700 hover:border-indigo-500/40 cursor-pointer shadow-sm"
+                title="Clear current files and upload a new original document and extracted text file"
+              >
+                <Upload className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Upload New Files</span>
+              </button>
+            )}
+
+            <div className="hidden md:flex items-center space-x-2 text-[11px] font-medium text-slate-400">
+              <span className="text-slate-500">1. Extract</span>
+              <span>&rarr;</span>
+              <span className="text-indigo-400 font-bold bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/30">
+                2. Check Originality
+              </span>
+              <span>&rarr;</span>
+              <span className={report ? 'text-indigo-400 font-bold' : 'text-slate-500'}>
+                3. Review Differences
+              </span>
+              <span>&rarr;</span>
+              <span className={report ? 'text-indigo-400 font-bold' : 'text-slate-500'}>
+                4. Generate Report
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -502,6 +548,7 @@ export const OriginalityCheck: React.FC<OriginalityCheckProps> = ({
                   originalFilename={report.original_filename}
                   jobId={report.job_id || jobId || undefined}
                   reportId={report.report_id}
+                  extractionPages={extractionPages || undefined}
                 />
 
                 {/* Detailed Mismatch Cards */}

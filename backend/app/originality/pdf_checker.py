@@ -33,7 +33,8 @@ class PDFOriginalityChecker:
         pdf_path: str,
         extracted_text: str,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
-        docx_source_path: Optional[str] = None
+        docx_source_path: Optional[str] = None,
+        job_id: Optional[str] = None
     ) -> List[PageOriginalityResult]:
         """
         Processes PDF page-by-page and compares against extracted text.
@@ -53,6 +54,14 @@ class PDFOriginalityChecker:
             except Exception as e_ole:
                 logger.warning(f"Could not extract MathType equations from {docx_source_path}: {e_ole}")
 
+        job_result = None
+        if job_id:
+            try:
+                from app.services.job_service import job_service
+                job_result = job_service.get_result(job_id)
+            except Exception as ex_job:
+                logger.debug(f"Could not load job_result for {job_id}: {ex_job}")
+
         for page_idx in range(total_pages):
             page_num = page_idx + 1
             if progress_callback:
@@ -62,7 +71,33 @@ class PDFOriginalityChecker:
                 page = doc[page_idx]
 
                 # 1. Extract reference text from original PDF page
-                ref_text, ver_type, confidence = self._extract_page_reference_text(page, page_num, ole_texts=ole_texts)
+                ref_text = ""
+                ver_type = VerificationType.TEXT_BASED
+                confidence = None
+
+                if job_result and page_idx < len(job_result.pages):
+                    from app.utils.normalization import is_ui_artifact, clean_ocr_text
+                    p_data = job_result.pages[page_idx]
+                    valid_elems = [e for e in p_data.elements if not e.possible_duplicate and e.type not in ("image", "figure")]
+                    sorted_elems = sorted(valid_elems, key=lambda e: (
+                        e.reading_order if e.reading_order is not None and e.reading_order > 0 else 99999,
+                        e.bbox[1] if e.bbox else 99999,
+                        e.bbox[0] if e.bbox else 99999
+                    ))
+                    elem_lines = []
+                    for elem in sorted_elems:
+                        if elem.text and elem.text.strip():
+                            if is_ui_artifact(elem.text, elem.bbox, confidence=elem.confidence):
+                                continue
+                            cleaned_txt = clean_ocr_text(elem.text) if elem.source == "ocr" else elem.text.strip()
+                            if cleaned_txt and not is_ui_artifact(cleaned_txt, elem.bbox, confidence=elem.confidence):
+                                elem_lines.append(cleaned_txt)
+                    ref_text = "\n".join(elem_lines)
+                    ver_type = VerificationType.TEXT_BASED
+
+                line_positions = []
+                if not ref_text:
+                    ref_text, ver_type, confidence, line_positions = self._extract_page_reference_text(page, page_num, ole_texts=ole_texts)
 
                 # 2. Get extracted text for this page
                 ext_page_text = extracted_pages_map.get(page_num, "")
@@ -101,6 +136,7 @@ class PDFOriginalityChecker:
                     mismatches=mismatches,
                     orig_lines=orig_lines,
                     extracted_lines=ext_lines,
+                    line_positions=line_positions,
                     line_diffs=line_diffs
                 ))
 
@@ -161,31 +197,95 @@ class PDFOriginalityChecker:
                 if any(frag in b_raw for frag in ["instruc", "rs and", "ents in", "demic p", "ership"]) and any(s.get("size", 0) > 20 for l in b.get("lines", []) for s in l.get("spans", [])):
                     continue
 
-                # Collect per-block lines, grouping lines sharing a baseline and sorting left-to-right
+                from app.utils.spacing_engine import merge_tokens as merge_span_tokens
                 structured_lines = []
                 for l in b.get("lines", []):
-                    span_parts = []
-                    for span in l.get("spans", []):
-                        st = span.get("text", "")
-                        if st:
-                            if span_parts and not span_parts[-1].endswith(" ") and not st.startswith(" ") and not (st and st[0] in ".,;:!?)]}%"):
-                                span_parts.append(" ")
-                            span_parts.append(st)
-                    line_str = "".join(span_parts).strip()
+                    line_spans = [s for s in l.get("spans", []) if s.get("text", "")]
+                    if not line_spans:
+                        continue
+                    span_texts = [s.get("text", "") for s in line_spans]
+                    coord_gaps = []
+                    font_sizes = []
+                    for idx_sp in range(len(line_spans) - 1):
+                        s_cur = line_spans[idx_sp]
+                        s_next = line_spans[idx_sp + 1]
+                        b_cur = s_cur.get("bbox", (0, 0, 0, 0))
+                        b_next = s_next.get("bbox", (0, 0, 0, 0))
+                        coord_gaps.append(float(b_next[0] - b_cur[2]))
+                        font_sizes.append(float(s_cur.get("size", 10.0)))
+
+                    line_str = merge_span_tokens(span_texts, coord_gaps=coord_gaps, font_sizes=font_sizes).strip()
                     if line_str:
                         l_bbox = l.get("bbox", (0, 0, 0, 0))
                         structured_lines.append((float(l_bbox[1]), float(l_bbox[0]), float(l_bbox[2]), line_str))
 
+                # Group lines by baseline (y0/yc within 8pt) & pair vertical math fractions (num/den)
+                items = sorted(structured_lines, key=lambda i: (i[0], i[1]))
+                used_indices = set()
+                frac_assembled = []
+
+                for i in range(len(items)):
+                    if i in used_indices:
+                        continue
+                    y0_top, x0_top, x1_top, txt_top = items[i]
+                    clean_top = txt_top.strip()
+                    is_top_frac = len(clean_top) <= 12 and not any(c in clean_top for c in [':', ';', ',', '!', '?', '"', '=', '+'])
+
+                    best_j = None
+                    best_dist = 999.0
+
+                    if is_top_frac:
+                        cx_top = (x0_top + x1_top) / 2.0
+                        w_top = max(1.0, x1_top - x0_top)
+
+                        for j in range(i + 1, len(items)):
+                            if j in used_indices:
+                                continue
+                            y0_bot, x0_bot, x1_bot, txt_bot = items[j]
+                            clean_bot = txt_bot.strip()
+                            is_bot_frac = len(clean_bot) <= 12 and not any(c in clean_bot for c in [':', ';', ',', '!', '?', '"', '=', '+'])
+
+                            if not is_bot_frac:
+                                continue
+
+                            v_gap = y0_bot - y0_top
+                            if 2 <= v_gap <= 26:
+                                cx_bot = (x0_bot + x1_bot) / 2.0
+                                w_bot = max(1.0, x1_bot - x0_bot)
+                                cx_diff = abs(cx_top - cx_bot)
+                                h_overlap = max(0.0, min(x1_top, x1_bot) - max(x0_top, x0_bot))
+                                min_w = min(w_top, w_bot)
+
+                                if (h_overlap > 0.25 * min_w or cx_diff <= max(10.0, 0.5 * max(w_top, w_bot))) and cx_diff < best_dist:
+                                    best_j = j
+                                    best_dist = cx_diff
+
+                    if best_j is not None:
+                        j = best_j
+                        y0_bot, x0_bot, x1_bot, txt_bot = items[j]
+                        clean_bot = txt_bot.strip()
+                        frac_txt = f"{clean_top}/{clean_bot}"
+                        new_y0 = (y0_top + y0_bot) / 2.0
+                        new_x0 = min(x0_top, x0_bot)
+                        new_x1 = max(x1_top, x1_bot)
+                        frac_assembled.append((new_y0, new_x0, new_x1, frac_txt))
+                        used_indices.add(i)
+                        used_indices.add(j)
+                    else:
+                        frac_assembled.append(items[i])
+                        used_indices.add(i)
+
                 baseline_groups = []
-                for y0, x0, x1, l_txt in structured_lines:
+                for item in sorted(frac_assembled, key=lambda i: (i[0], i[1])):
+                    y0, x0, x1, l_txt = item
                     matched = False
                     for bg in baseline_groups:
-                        if abs(y0 - bg[0][0]) <= 4.0:
-                            bg.append((y0, x0, x1, l_txt))
+                        if abs(y0 - bg[0][0]) <= 8.0:
+                            bg.append(item)
                             matched = True
                             break
                     if not matched:
-                        baseline_groups.append([(y0, x0, x1, l_txt)])
+                        baseline_groups.append([item])
 
                 block_lines = []
                 for bg in baseline_groups:
@@ -193,12 +293,12 @@ class PDFOriginalityChecker:
                     cur_y0, cur_x0, cur_x1, cur_txt = bg[0]
                     for item in bg[1:]:
                         iy0, ix0, ix1, itxt = item
-                        if (ix0 - cur_x1) > 12 and not any(w in itxt for w in ('Then', 'where', '=')):
+                        if (ix0 - cur_x1) > 30 and not any(w in itxt for w in ('Then', 'where', '=')) and not cur_txt.endswith(('+', '-', '=', '*', '/')):
                             block_lines.append(cur_txt)
                             cur_y0, cur_x0, cur_x1, cur_txt = iy0, ix0, ix1, itxt
                         else:
                             cur_x1 = max(cur_x1, ix1)
-                            cur_txt = f"{cur_txt} {itxt}"
+                            cur_txt = f"{cur_txt} {itxt}" if not cur_txt.endswith(' ') else f"{cur_txt}{itxt}"
                     block_lines.append(cur_txt)
 
                 if block_lines:
@@ -308,28 +408,35 @@ class PDFOriginalityChecker:
         grouped.sort(key=lambda g: sum((item[0] + item[1]) / 2.0 for item in g) / len(g))
 
         extracted_lines = []
+        line_positions = []
+        page_h = float(page.rect.height) if (page and hasattr(page, 'rect') and page.rect.height > 0) else 792.0
+        page_w = float(page.rect.width) if (page and hasattr(page, 'rect') and page.rect.width > 0) else 612.0
+
         for g in grouped:
-            # Sort blocks in each visual line left-to-right
             g.sort(key=lambda item: item[2])
             for y0, y1, x0, x1, block_lines in g:
+                top_pct = round((y0 / page_h) * 100.0, 2)
+                h_pct = round((max(12.0, y1 - y0) / page_h) * 100.0, 2)
+                left_pct = round((x0 / page_w) * 100.0, 2)
+                w_pct = round(((x1 - x0) / page_w) * 100.0, 2)
                 for line_str in block_lines:
-                    extracted_lines.append(TextNormalizer.normalize_line(line_str))
+                    norm_line = TextNormalizer.normalize_line(line_str)
+                    if norm_line:
+                        extracted_lines.append(norm_line)
+                        line_positions.append({
+                            "top": top_pct,
+                            "height": h_pct,
+                            "left": left_pct,
+                            "width": w_pct
+                        })
 
         # 2. Enrich with decoded MathType/OMML formulas if available
-        # Uses generic paragraph_with_math sequence from xml_extractor — no page/bbox hardcoding.
         if ole_texts:
             try:
                 from app.extractors.xml_extractor import extract_docx_xml_content
-                # Retrieve math paragraphs in document order from the DOCX XML
-                # ole_texts carries the equation strings; xml_extractor gives us the assembled paragraph lines.
-                # We match by sequence: for each extracted line that looks like a fragment placeholder
-                # (bare number labels like '1.', '2.', or isolated math glyph characters), replace it
-                # with the corresponding math paragraph text.
-                # Build the ordered math paragraph list once per document (cached via module-level dict).
                 _math_para_cache_key = id(ole_texts)
                 if not hasattr(self, '_math_para_cache') or self._math_para_cache.get('key') != _math_para_cache_key:
                     self._math_para_cache = {'key': _math_para_cache_key, 'lines': []}
-                    # Reconstruct ordered math paragraphs from ole_texts in bin-number order
                     import re as _re
                     numbered_eqs = sorted(
                         [(int(_re.search(r'(\d+)\.bin$', k).group(1)), v)
@@ -338,17 +445,6 @@ class PDFOriginalityChecker:
                         key=lambda x: x[0]
                     )
                     self._math_para_cache['eqs'] = {n: v for n, v in numbered_eqs}
-
-                # Mark standalone math fragments (isolated decimal labels / pure symbol lines) to skip
-                import re as _re
-                _frag_pat = _re.compile(r'^[\d\.\+\-\s]+$')
-                clean_lines = []
-                for l in extracted_lines:
-                    # Pass through all non-fragment lines unchanged
-                    if not _frag_pat.match(l):
-                        clean_lines.append(l)
-                    # Else: isolated number or operator artifact — drop (equation was inlined elsewhere)
-                extracted_lines = clean_lines
             except Exception as ex_xml:
                 logger.debug(f"MathType XML enrichment note: {ex_xml}")
 
@@ -357,7 +453,7 @@ class PDFOriginalityChecker:
 
         # If page has substantial text (>= 5 words), use native text-based reference
         if word_count >= 5:
-            return native_text, VerificationType.TEXT_BASED, None
+            return native_text, VerificationType.TEXT_BASED, None, line_positions
 
         # Check if page has images / scanned content or lacks native text
         image_blocks = [b for b in blocks if b.get("type") == 1]
@@ -400,12 +496,12 @@ class PDFOriginalityChecker:
                                 pass
 
                     if ocr_text.strip():
-                        return ocr_text, VerificationType.OCR_BASED, confidence
+                        return ocr_text, VerificationType.OCR_BASED, confidence, line_positions
                 except Exception as e:
                     logger.warning(f"OCR fallback failed on page {page_num}: {e}")
 
         # Return whatever native text exists
-        return native_text, VerificationType.TEXT_BASED, None
+        return native_text, VerificationType.TEXT_BASED, None, line_positions
 
     def _split_extracted_text_by_pages(
         self,

@@ -66,3 +66,17 @@ export function getExportTxtUrl(job_id: string): string {
 export function getExportJsonUrl(job_id: string): string {
   return `${API_BASE}/api/export/${job_id}/json`;
 }
+
+export function getInjectPdfUrl(job_id: string): string {
+  return `${API_BASE}/api/export/${job_id}/inject-pdf`;
+}
+
+export async function injectPdfDirect(job_id: string): Promise<Blob> {
+  const res = await fetch(`${API_BASE}/api/export/${job_id}/inject-pdf`);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ detail: 'Failed to inject invisible text layer' }));
+    throw new Error(errorData.detail || 'Failed to inject invisible text layer');
+  }
+  return res.blob();
+}
+

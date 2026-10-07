@@ -143,12 +143,12 @@ class TagClassifier:
 
             return {
                 "content_type": "image",
-                "tag": "Figure",
+                "tag": "Image",
                 "is_tagged": True,
                 "tag_source": tag_src,
                 "parameters": {
                     "content_type": "image",
-                    "tag": "Figure",
+                    "tag": "Image",
                     "is_tagged": True,
                     "tag_source": tag_src,
                     "image_id": meta.get("image_id"),

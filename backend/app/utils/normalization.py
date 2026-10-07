@@ -133,14 +133,24 @@ def is_ui_artifact(
     if CHECKBOX_GLYPH_PATTERN.match(raw_t):
         return True
 
-    # Standalone '0' or 'o' or 'O' in a small square box (empty checkbox / radio button)
-    if raw_t in ('0', 'o', 'O') and (w <= 36 and h <= 36 and 0.65 <= ar <= 1.5):
+    # Standalone empty checkbox / radio button glyph:
+    # Only treat 'o' or 'O' (or low-confidence '0') in a square box as checkbox noise
+    if raw_t in ('o', 'O') and (w <= 36 and h <= 36 and 0.65 <= ar <= 1.5):
         return True
+    if raw_t == '0' and (w <= 36 and h <= 36 and 0.65 <= ar <= 1.5):
+        # A legitimate numeric '0' on graph axes or tables usually has confidence >= 0.60
+        # Only discard if extremely low confidence (< 0.50)
+        if conf_norm is not None and conf_norm < 0.50:
+            return True
 
-    # Standalone '1' or 'l' or '|' (checkbox tick / cursor noise)
-    if raw_t in ('1', 'l', '|') and (w <= 30 and h <= 30):
-        # A checkmark misdetected as '1' has square-ish aspect ratio (ar >= 0.55), whereas real digit '1' has ar ~ 0.3
+    # Standalone tick / cursor / bar noise:
+    # '|' or non-digit line noise
+    if raw_t in ('|', 'l') and (w <= 30 and h <= 30):
         if ar >= 0.55 or (conf_norm is not None and conf_norm < 0.85):
+            return True
+    elif raw_t == '1' and (w <= 30 and h <= 30):
+        # Genuine digit '1' in graph axes / tables: only discard if very low confidence (< 0.50)
+        if conf_norm is not None and conf_norm < 0.50:
             return True
 
     # 5. Isolated punctuation / line noise (<= 2 chars)
@@ -167,8 +177,14 @@ def is_ui_artifact(
 
     # 7. Standalone short glyph/digit (<= 2 chars) in a small button icon box (w <= 35, h <= 35)
     # e.g., window title bar pin/minimize/collapse/close icons misdetected as '4' or '11'
+    # IMPORTANT: Do NOT discard valid numeric coordinates, axis markers, scores or values (e.g. '0', '1', '2', '83', '76', '96')
     if len(raw_t) <= 2 and (w <= 35 and h <= 35 and box_area <= 1200):
-        return True
+        # If it's a pure digit/number, only treat as artifact if confidence is very low (< 0.40)
+        if raw_t.isdigit():
+            if conf_norm is not None and conf_norm < 0.40:
+                return True
+        else:
+            return True
 
     return False
 
