@@ -88,6 +88,7 @@ export interface ExtractionResult {
   job_id: string;
   filename: string;
   file_type: 'pdf' | 'docx';
+  document_language?: string;
   is_tagged_document?: boolean;
   tagging_summary?: TaggingSummary;
   pages: PageData[];

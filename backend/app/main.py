@@ -30,7 +30,7 @@ app.include_router(results.router)
 app.include_router(export.router)
 app.include_router(originality.router)
 
-@app.get("/")
+@app.get("/api/health")
 async def root():
     return {
         "app": "Text Extractor Tool API",
