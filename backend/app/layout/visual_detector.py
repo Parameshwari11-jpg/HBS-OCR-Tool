@@ -456,9 +456,8 @@ def detect_visual_elements_from_page_image(
         cx, cy, cw_px, ch_px = cv2.boundingRect(c)
         cw_pt = cw_px * scale_px_to_pt
         ch_pt = ch_px * scale_px_to_pt
-        
-        # Must be large enough to be a standalone visual element
-        if cw_pt >= 45.0 and ch_pt >= 45.0 and cw_pt <= 0.90 * pw and ch_pt <= 0.90 * ph:
+        # Must be large enough to be a standalone visual element (>= 60pt avoids catching individual large text characters if OCR fails)
+        if cw_pt >= 60.0 and ch_pt >= 60.0 and cw_pt <= 0.90 * pw and ch_pt <= 0.90 * ph:
             roi = img[cy:cy+ch_px, cx:cx+cw_px]
             if roi.size > 0 and roi.std() > 18.0: # Ensure it's not just a flat uniform artifact
                 bx0 = round(cx * scale_px_to_pt, 2)

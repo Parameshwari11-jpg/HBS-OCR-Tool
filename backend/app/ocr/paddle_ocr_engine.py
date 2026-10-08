@@ -27,9 +27,12 @@ class PaddleOCREngine:
         if self._initialized:
             return
         try:
-            from paddleocr import PaddleOCR
-            # Suppress verbose paddle logging
+            # Fix for common Windows OpenMP DLL conflict that causes silent crashes
+            os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
             os.environ["FLAGS_allocator_strategy"] = "naive_best_fit"
+            
+            from paddleocr import PaddleOCR
+            
             self._ocr = PaddleOCR(
                 use_angle_cls=self.use_angle_cls,
                 lang=self.lang,
@@ -39,7 +42,7 @@ class PaddleOCREngine:
             self._initialized = True
             logger.info("PaddleOCR engine initialized successfully.")
         except Exception as e:
-            logger.warning(f"PaddleOCR failed to initialize: {e}. Will use fallback or retry.")
+            logger.error(f"PaddleOCR failed to initialize. Root cause: {e}", exc_info=True)
             self._ocr = None
             self._initialized = True
 
