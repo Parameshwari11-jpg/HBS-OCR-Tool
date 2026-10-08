@@ -127,7 +127,47 @@ class PDFExtractor:
                 if abs(d["rect"].y1 - d["rect"].y0) <= 3.0 and 5.0 <= (d["rect"].x1 - d["rect"].x0) <= 65.0
             ]
 
-            valid_blocks = [b for b in blocks if b.get("type") == 0]
+            def split_block_into_column_subblocks(b: Dict[str, Any]) -> List[Dict[str, Any]]:
+                lines = b.get("lines", [])
+                if not lines or len(lines) <= 1:
+                    return [b]
+                x_ranges = [(l["bbox"][0], l["bbox"][2]) for l in lines]
+                min_x0 = min(r[0] for r in x_ranges)
+                max_x0 = max(r[0] for r in x_ranges)
+                if max_x0 - min_x0 < 45.0:
+                    return [b]
+                col_clusters = []
+                for l in lines:
+                    placed = False
+                    lx0, lx1 = l["bbox"][0], l["bbox"][2]
+                    for col in col_clusters:
+                        col_x0 = min(item["bbox"][0] for item in col)
+                        col_x1 = max(item["bbox"][2] for item in col)
+                        if not (lx1 < col_x0 - 25.0 or lx0 > col_x1 + 25.0):
+                            col.append(l)
+                            placed = True
+                            break
+                    if not placed:
+                        col_clusters.append([l])
+                if len(col_clusters) <= 1:
+                    return [b]
+                sub_blocks = []
+                for col_lines in col_clusters:
+                    new_b = dict(b)
+                    new_b["lines"] = col_lines
+                    new_b["bbox"] = (
+                        min(l["bbox"][0] for l in col_lines),
+                        min(l["bbox"][1] for l in col_lines),
+                        max(l["bbox"][2] for l in col_lines),
+                        max(l["bbox"][3] for l in col_lines),
+                    )
+                    sub_blocks.append(new_b)
+                return sub_blocks
+
+            raw_valid_blocks = [b for b in blocks if b.get("type") == 0]
+            valid_blocks = []
+            for rb in raw_valid_blocks:
+                valid_blocks.extend(split_block_into_column_subblocks(rb))
             clusters = []
             assigned = set()
 
@@ -487,6 +527,17 @@ class PDFExtractor:
                 for rect_info in img_rects:
                     img_bbox = [float(rect_info.x0), float(rect_info.y0), float(rect_info.x1), float(rect_info.y1)]
                     img_id = f"img_p{page_num}_{img_idx+1}"
+                    rw = float(rect_info.width)
+                    rh = float(rect_info.height)
+
+                    # Skip full-page background scans or massive page-spanning images (> 65% width AND height, or > 80% width, or > 80% height)
+                    # so they do not cover or suppress genuine discrete child figures, flags, photos, and drawings
+                    if (rw >= 0.65 * page_width and rh >= 0.65 * page_height) or (rw >= 0.80 * page_width and rh >= 0.40 * page_height) or (rh >= 0.80 * page_height and rw >= 0.40 * page_width):
+                        continue
+                    # Also skip 1-bit monochrome (bpc=1) container/column scan artifacts spanning large blocks (w > 120 and h > 150)
+                    # These are text-rendering or background scan masks, NOT genuine individual figures or photos
+                    if img_info[4] == 1 and (rw >= 140.0 and rh >= 140.0):
+                        continue
 
                     img_classification = TagClassifier.classify_element(
                         is_image=True,
@@ -714,14 +765,21 @@ class PDFExtractor:
                         scale = 72.0 / self.render_dpi
                         scaled_bbox = [raw_bbox[0] * scale, raw_bbox[1] * scale, raw_bbox[2] * scale, raw_bbox[3] * scale]
                         
-                        st_type = struct_res.get("type", "text")
+                        # If PP-Structure misclassifies a large text region/column as a 'figure', check its text payload:
+                        # Real figures/photos do NOT have multi-line paragraphs. If it contains extensive text, treat as layout text block.
+                        struct_text = (struct_res.get("text") or "").strip()
+                        is_genuine_fig = (st_type == "figure")
+                        if is_genuine_fig and (len(struct_text.split()) >= 15 or len(struct_text) >= 80):
+                            is_genuine_fig = False
+                            st_type = "text"
+
                         if st_type in ("equation", "formula"):
                             st_type = "formula"
                             stats.formulas_count += 1
                         elif st_type == "table":
                             stats.tables_count += 1
-                        elif st_type == "figure":
-                            continue
+                        elif is_genuine_fig:
+                            stats.images_count += 1
                         else:
                             stats.pp_structure_regions += 1
 
@@ -729,6 +787,7 @@ class PDFExtractor:
                             text=struct_res.get("text"),
                             bbox=scaled_bbox,
                             is_table=(st_type == "table"),
+                            is_image=is_genuine_fig,
                             is_formula=(st_type == "formula"),
                             page_width=page_width,
                             page_height=page_height,
@@ -790,6 +849,102 @@ class PDFExtractor:
                 except Exception as ex_struct:
                     logger.debug(f"PPStructure table check note: {ex_struct}")
 
+            # Step 5b — Comprehensive Non-Text Visual Element Discovery (Figures, Flags, Lines, Decorative Bars)
+            try:
+                from app.layout.visual_detector import detect_visual_elements_from_page_image
+                known_text_boxes = [e.bbox for e in elements if e.text and e.text.strip() and e.bbox]
+                if os.path.exists(page_img_path):
+                    detected_visuals = detect_visual_elements_from_page_image(
+                        page_img_path=page_img_path,
+                        page_rect=rect,
+                        known_text_bboxes=known_text_boxes,
+                        render_dpi=self.render_dpi
+                    )
+                    for vis in detected_visuals:
+                        vb = vis["bbox"]
+                        # Check if this visual element is already accounted for by an existing native/image element.
+                        # Exclude full-page scans or massive column container images so distinct sub-elements (photos, flags) are not suppressed.
+                        already_exists = False
+                        for e_cur in elements:
+                            if e_cur.type in ("image", "figure", "drawing") and e_cur.bbox:
+                                cb = e_cur.bbox
+                                cb_w = float(cb[2] - cb[0])
+                                cb_h = float(cb[3] - cb[1])
+                                # A visual sub-element (photo, icon, flag) should ONLY be marked as already existing
+                                # if the matching element has a comparable size (i.e. not a container holding it)
+                                overlap_w = max(0.0, min(vb[2], cb[2]) - max(vb[0], cb[0]))
+                                overlap_h = max(0.0, min(vb[3], cb[3]) - max(vb[1], cb[1]))
+                                overlap_area = overlap_w * overlap_h
+                                vb_area = (vb[2] - vb[0]) * (vb[3] - vb[1])
+                                cb_area = cb_w * cb_h
+                                # If existing element is more than 2.5x larger than this visual sub-element,
+                                # it is a container box/card, NOT the same element!
+                                if cb_area > 2.5 * vb_area:
+                                    continue
+                                if overlap_area / max(1.0, vb_area) >= 0.60:
+                                    already_exists = True
+                                    break
+                        if already_exists:
+                            continue
+
+                        v_type = vis["type"]
+                        v_subtype = vis.get("subtype", "figure")
+                        v_tag = "Figure"
+
+                        # Crop and generate high-fidelity visual preview for this element
+                        vis_img_url = None
+                        vis_img_id = f"vis_{v_subtype}_p{page_num}_{elem_counter}"
+                        try:
+                            extracted_images_dir = os.path.join(temp_dir, "extracted_images")
+                            os.makedirs(extracted_images_dir, exist_ok=True)
+                            vis_filename = f"{vis_img_id}.png"
+                            vis_save_path = os.path.join(extracted_images_dir, vis_filename)
+                            
+                            scale_pt_to_px = self.render_dpi / 72.0
+                            crop_x0 = max(0, int(vb[0] * scale_pt_to_px))
+                            crop_y0 = max(0, int(vb[1] * scale_pt_to_px))
+                            crop_x1 = max(crop_x0 + 1, int(vb[2] * scale_pt_to_px))
+                            crop_y1 = max(crop_y0 + 1, int(vb[3] * scale_pt_to_px))
+                            
+                            with Image.open(page_img_path) as full_page_im:
+                                c_im = full_page_im.crop((crop_x0, crop_y0, min(full_page_im.width, crop_x1), min(full_page_im.height, crop_y1)))
+                                c_im.save(vis_save_path)
+                            vis_img_url = f"/api/image/{job_id}/extracted_images/{vis_filename}"
+                        except Exception as ex_crop:
+                            logger.debug(f"Visual element crop note: {ex_crop}")
+
+                        elem_id = f"vis_elem_p{page_num}_{elem_counter}"
+                        elements.append(ExtractedElement(
+                            id=elem_id,
+                            page=page_num,
+                            type=v_type,
+                            content_type=v_type,
+                            tag=v_tag,
+                            is_tagged=False,
+                            tag_source="visual_detector",
+                            parameters={
+                                "content_type": v_type,
+                                "subtype": v_subtype,
+                                "tag": v_tag,
+                                "bbox": vb,
+                                "width": vis["width"],
+                                "height": vis["height"],
+                                "object_path": f"/Document/Page[{page_num}]/{v_tag}[{elem_counter}]",
+                                "confidence": 1.0
+                            },
+                            source="visual_detector",
+                            bbox=vb,
+                            confidence=1.0,
+                            image_id=vis_img_id,
+                            image_path=vis_img_url,
+                            width=int(vis["width"]),
+                            height=int(vis["height"])
+                        ))
+                        elem_counter += 1
+                        stats.images_count += 1
+            except Exception as ex_vis:
+                logger.debug(f"Visual element detection note: {ex_vis}")
+
             # Step 6 — Overlap Detection & Classification
             elements = detect_overlaps(elements)
 
@@ -811,11 +966,39 @@ class PDFExtractor:
         doc.close()
 
         all_extracted_elements = [elem for p in pages_data for elem in p.elements]
+
+        # Step 9 — Non-Text Object Inventory Validation & Path Verification
+        # Validates that every detected visual element has valid bounding box coordinates, a page mapping,
+        # and a usable object reference/path for the accessibility remediation workflow.
+        unresolved_visual_objects = []
+        for elem in all_extracted_elements:
+            if elem.type in ("image", "figure", "drawing"):
+                has_bbox = bool(elem.bbox and len(elem.bbox) >= 4 and elem.bbox[2] > elem.bbox[0] and elem.bbox[3] > elem.bbox[1])
+                has_path = bool(elem.parameters.get("object_path") or elem.image_path or elem.image_id)
+                has_page = bool(elem.page and elem.page >= 1)
+                
+                if not (has_bbox and has_path and has_page):
+                    elem.parameters["validation_status"] = "Needs Review"
+                    elem.parameters["validation_error"] = "Missing coordinates, object path, or page mapping"
+                    unresolved_visual_objects.append({
+                        "id": elem.id,
+                        "page": elem.page,
+                        "type": elem.type,
+                        "error": "Missing valid bounding box or object reference path"
+                    })
+                else:
+                    elem.parameters["validation_status"] = "Validated"
+                    if "object_path" not in elem.parameters:
+                        elem.parameters["object_path"] = f"/Document/Page[{elem.page}]/{elem.tag or 'Figure'}[{elem.id}]"
+
         tagging_summary = TagClassifier.build_tagging_summary(all_extracted_elements, doc_is_tagged=doc_is_tagged)
+        if unresolved_visual_objects:
+            tagging_summary["unresolved_visual_objects"] = unresolved_visual_objects
 
         return {
             "pages": pages_data,
             "statistics": stats,
             "is_tagged_document": doc_is_tagged,
-            "tagging_summary": tagging_summary
+            "tagging_summary": tagging_summary,
+            "unresolved_visual_objects": unresolved_visual_objects
         }

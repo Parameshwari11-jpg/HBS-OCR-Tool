@@ -68,7 +68,9 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
 
   const nativeElements = allElements.filter((e) => e.source === 'native' || e.source === 'docx');
   const ocrElements = allElements.filter((e) => e.source === 'ocr' || e.source === 'pp_structure');
-  const imageElements = allElements.filter((e) => e.type === 'image' || (e.type === 'formula' && Boolean(e.image_path)));
+  const imageElements = allElements.filter(
+    (e) => e.type === 'image' || e.type === 'figure' || e.type === 'drawing' || e.source === 'visual_detector' || (e.type === 'formula' && Boolean(e.image_path))
+  );
   const tableElements = allElements.filter((e) => e.type === 'table');
 
   // Parse reconstructed_text into per-page sections matching result.pages
@@ -582,17 +584,38 @@ export const ResultsTabs: React.FC<ResultsTabsProps> = ({
                             }`}
                           >
                             <div className="flex items-center justify-between text-xs font-semibold text-purple-400">
-                              <div className="flex items-center space-x-1.5">
+                              <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
                                 <span>Page {imgElem.page} •</span>
                                 {imgElem.type === 'formula' ? (
                                   <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px] font-bold">
                                     MathType Equation
                                   </span>
                                 ) : (
-                                  <span>Image {imgElem.image_id || imgElem.id}</span>
+                                  <span className="font-mono text-[11px] text-slate-300">
+                                    {imgElem.image_id || imgElem.id}
+                                  </span>
+                                )}
+                                {imgElem.parameters?.subtype && (
+                                  <span className="px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 text-[10px] uppercase font-bold tracking-wider">
+                                    {String(imgElem.parameters.subtype)}
+                                  </span>
                                 )}
                               </div>
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
+                                  imgElem.parameters?.validation_status === 'Needs Review'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                }`}
+                              >
+                                {imgElem.parameters?.validation_status || 'Validated'}
+                              </span>
                             </div>
+                            {imgElem.parameters?.object_path && (
+                              <div className="text-[10px] font-mono text-cyan-400/90 bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-800/40 truncate">
+                                Path: {imgElem.parameters.object_path}
+                              </div>
+                            )}
                             {imgElem.image_path && (
                               <div className="w-full h-44 bg-slate-900 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center p-1">
                                 <img

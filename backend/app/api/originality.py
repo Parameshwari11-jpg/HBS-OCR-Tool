@@ -418,6 +418,34 @@ async def inject_invisible_text(report_id: str):
                 except Exception as e_ins:
                     logger.debug(f"Failed inserting single text token: {e_ins}")
 
+            # Inject tag-ready vector paths for non-text elements (images, figures, drawings, shapes, lines, flags)
+            # Each element gets its own independent vector path so Adobe Acrobat can select and tag each one individually without PitStop
+            if job_result and p_idx < len(job_result.pages):
+                non_text_elements = [
+                    elem for elem in job_result.pages[p_idx].elements
+                    if elem.type in ("image", "figure", "drawing", "shape", "line")
+                    or elem.tag in ("Image", "Figure")
+                ]
+                pw_cur = float(page.rect.width)
+                ph_cur = float(page.rect.height)
+                for elem in non_text_elements:
+                    if elem.bbox and len(elem.bbox) == 4:
+                        bx0, by0, bx1, by1 = elem.bbox
+                        bw = bx1 - bx0
+                        bh = by1 - by0
+                        # Skip full-page background scans or massive container images (> 65% of page width AND height, or > 80% width, or > 80% height)
+                        # so they don't cover child elements like flags, photos, boxes, and icons
+                        if (bw >= 0.65 * pw_cur and bh >= 0.65 * ph_cur) or (bw >= 0.80 * pw_cur and bh >= 0.40 * ph_cur) or (bh >= 0.80 * ph_cur and bw >= 0.40 * pw_cur):
+                            continue
+                        if bw >= 4.0 and bh >= 4.0:
+                            try:
+                                elem_shape = page.new_shape()
+                                elem_shape.draw_rect(pymupdf.Rect(bx0, by0, bx1, by1))
+                                elem_shape.finish(width=0.5, stroke_opacity=0.001)
+                                elem_shape.commit()
+                            except Exception:
+                                pass
+
             # Reorder page content streams so newly injected text streams are placed FIRST (behind all images/graphics)
             post_xrefs = page.get_contents()
             new_xrefs = [x for x in post_xrefs if x not in init_xrefs]

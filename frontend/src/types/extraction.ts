@@ -15,7 +15,7 @@ export interface ExtractedElement {
   is_tagged?: boolean;
   tag_source?: string;
   parameters?: Record<string, any>;
-  source: 'native' | 'ocr' | 'pp_structure' | 'docx' | 'docx_xml';
+  source: 'native' | 'ocr' | 'pp_structure' | 'docx' | 'docx_xml' | 'visual_detector';
   text?: string;
   page: number;
   bbox?: [number, number, number, number]; // [x0, y0, x1, y1]
@@ -81,6 +81,7 @@ export interface TaggingSummary {
   inferred_elements_count: number;
   content_types?: Record<string, number>;
   tag_sources?: Record<string, number>;
+  unresolved_visual_objects?: Array<{ id: string; page: number; type: string; error: string }>;
 }
 
 export interface ExtractionResult {
@@ -92,4 +93,5 @@ export interface ExtractionResult {
   pages: PageData[];
   statistics: ExtractionStatistics;
   reconstructed_text: string;
+  unresolved_visual_objects?: Array<{ id: string; page: number; type: string; error: string }>;
 }

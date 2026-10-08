@@ -368,10 +368,12 @@ export const PageViewer: React.FC<PageViewerProps> = ({
 
                   const isSelected = selectedElementId === elem.id;
 
+                  const isVisual = elem.type === 'image' || elem.type === 'figure' || elem.type === 'drawing' || elem.source === 'visual_detector';
+
                   // Filter checks
-                  if (elem.source === 'native' && !showNativeTextBbox && !isSelected) return null;
+                  if (elem.source === 'native' && !isVisual && !showNativeTextBbox && !isSelected) return null;
                   if (elem.source === 'ocr' && !showOcrBbox && !isSelected) return null;
-                  if (elem.type === 'image' && !showImageBbox && !isSelected) return null;
+                  if (isVisual && !showImageBbox && !isSelected) return null;
                   if (elem.type === 'table' && !showTableBbox && !isSelected) return null;
                   if (elem.type === 'formula' && !showFormulaBbox && !isSelected) return null;
 
@@ -382,9 +384,9 @@ export const PageViewer: React.FC<PageViewerProps> = ({
                   if (elem.source === 'ocr') {
                     strokeColor = '#10b981'; // emerald
                     fillColor = 'rgba(16, 185, 129, 0.1)';
-                  } else if (elem.type === 'image') {
-                    strokeColor = '#a855f7'; // purple
-                    fillColor = 'rgba(168, 85, 247, 0.1)';
+                  } else if (isVisual) {
+                    strokeColor = '#ec4899'; // vivid pink/magenta for distinct visual elements
+                    fillColor = 'rgba(236, 72, 153, 0.12)';
                   } else if (elem.type === 'table') {
                     strokeColor = '#f59e0b'; // amber
                     fillColor = 'rgba(245, 158, 11, 0.12)';
@@ -407,7 +409,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({
                       height={height}
                       fill={fillColor}
                       stroke={strokeColor}
-                      strokeWidth={isSelected ? 2.5 : 1}
+                      strokeWidth={isSelected ? 2.5 : (isVisual ? 1.5 : 1)}
                       strokeDasharray={elem.possible_duplicate ? '3 3' : 'none'}
                       className="cursor-pointer transition-all hover:opacity-80"
                       onClick={(e) => {
@@ -415,7 +417,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({
                         onSelectElement(elem);
                       }}
                     >
-                      <title>{`${elem.type} (${elem.source}): ${elem.text || ''}`}</title>
+                      <title>{`${elem.type} [${elem.parameters?.subtype || elem.tag || ''}] (${elem.source}): ${elem.text || elem.id}`}</title>
                     </rect>
                   );
                 })}

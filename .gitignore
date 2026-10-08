@@ -36,6 +36,18 @@ uploads/
 
 
 # Test sample files, generated output images and test caches
+*.png
+!frontend/public/*.png
+!frontend/src/assets/*.png
+backend/*.png
+*.pdf
+backend/*.pdf
+*.jpg
+*.jpeg
+!frontend/public/*.jpg
+!frontend/public/*.jpeg
+!frontend/src/assets/*.jpg
+!frontend/src/assets/*.jpeg
 tests/*.png
 tests/*.jpg
 tests/*.jpeg
@@ -48,8 +60,20 @@ tests/sample_math.docx
 tests/exact_original_sample.png
 exact_original_sample.png
 exact_original_sample_*.png
+test_*.png
+crop_*.png
+debug_*.png
 temp_crop_*.png
 temp_crop_*.jpg
+check_*.py
+debug_*.py
+test_*.py
+find_*.py
+inspect_*.py
+match_*.py
+verify_*.py
+analyze_*.py
+detect_*.py
 
 # OS & Editor files
 .DS_Store
