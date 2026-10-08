@@ -427,6 +427,54 @@ def detect_visual_elements_from_page_image(
                 })
 
     # =========================================================================
+    # Step 7b: Generic Catch-All for Unidentified Visual Elements
+    # =========================================================================
+    # Creates a mask of EVERYTHING we have found so far (text + all detected elements)
+    everything_mask = text_mask.copy()
+    everything_mask[spine_mask > 0] = 255
+    for el in elements:
+        eb = el["bbox"]
+        ex0 = max(0, int(eb[0] * scale_pt_to_px))
+        ey0 = max(0, int(eb[1] * scale_pt_to_px))
+        ex1 = min(w, int(eb[2] * scale_pt_to_px))
+        ey1 = min(h, int(eb[3] * scale_pt_to_px))
+        everything_mask[ey0:ey1, ex0:ex1] = 255
+        
+    # Blur the image heavily to merge adjacent textures in uncaptured photos
+    blur_gray = cv2.GaussianBlur(gray, (25, 25), 0)
+    _, dark_mask = cv2.threshold(blur_gray, 240, 255, cv2.THRESH_BINARY_INV)
+    
+    # Exclude what we already know
+    dark_mask[everything_mask > 0] = 0
+    
+    # Use morphology to close small gaps and group nearby blobs
+    catchall_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(20 * scale_pt_to_px), int(20 * scale_pt_to_px)))
+    catchall_closed = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, catchall_kernel)
+    
+    c_cnts, _ = cv2.findContours(catchall_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for c in c_cnts:
+        cx, cy, cw_px, ch_px = cv2.boundingRect(c)
+        cw_pt = cw_px * scale_px_to_pt
+        ch_pt = ch_px * scale_px_to_pt
+        
+        # Must be large enough to be a standalone visual element
+        if cw_pt >= 45.0 and ch_pt >= 45.0 and cw_pt <= 0.90 * pw and ch_pt <= 0.90 * ph:
+            roi = img[cy:cy+ch_px, cx:cx+cw_px]
+            if roi.size > 0 and roi.std() > 18.0: # Ensure it's not just a flat uniform artifact
+                bx0 = round(cx * scale_px_to_pt, 2)
+                by0 = round(cy * scale_px_to_pt, 2)
+                bx1 = round((cx + cw_px) * scale_px_to_pt, 2)
+                by1 = round((cy + ch_px) * scale_px_to_pt, 2)
+                elements.append({
+                    "type": "figure",
+                    "subtype": "photo",
+                    "tag": "Figure",
+                    "bbox": [bx0, by0, bx1, by1],
+                    "width": round(cw_pt, 2),
+                    "height": round(ch_pt, 2)
+                })
+
+    # =========================================================================
     # Step 8: Deduplicate and Filter Full-Page Container Artifacts
     # =========================================================================
     final_elements: List[Dict[str, Any]] = []
