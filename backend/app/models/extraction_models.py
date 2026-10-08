@@ -81,6 +81,7 @@ class ExtractionJobStatus(BaseModel):
     total_pages: Optional[int] = None
     stage_message: Optional[str] = None
     error: Optional[str] = None
+    document_language: Optional[str] = None  # OCR language code selected by user
 
 class TaggingSummary(BaseModel):
     is_tagged_document: bool = False
@@ -95,8 +96,10 @@ class ExtractionResult(BaseModel):
     job_id: str
     filename: str
     file_type: str
+    document_language: Optional[str] = None  # OCR language code, e.g. 'en', 'fr', 'es'
     is_tagged_document: bool = False
     tagging_summary: Optional[TaggingSummary] = None
     pages: List[PageData] = Field(default_factory=list)
     statistics: ExtractionStatistics = Field(default_factory=ExtractionStatistics)
     reconstructed_text: str = ""
+

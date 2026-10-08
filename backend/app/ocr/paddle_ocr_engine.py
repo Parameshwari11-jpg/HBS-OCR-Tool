@@ -16,6 +16,13 @@ class PaddleOCREngine:
         self._ocr = None
         self._initialized = False
         
+    def set_language(self, lang: str):
+        if self.lang != lang:
+            self.lang = lang
+            self._initialized = False
+            self._ocr = None
+            logger.info(f"PaddleOCR language set to {lang}. Engine will be re-initialized.")
+
     def _init_ocr(self):
         if self._initialized:
             return

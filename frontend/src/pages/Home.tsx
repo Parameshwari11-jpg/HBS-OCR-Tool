@@ -9,8 +9,9 @@ import { ExportButtons } from '../components/ExportButtons';
 import { uploadFile, startExtraction, getJobStatus, getJobResults, lookupJobResults } from '../api/extractionApi';
 import { ExtractionJobStatus, ExtractionResult, ExtractedElement } from '../types/extraction';
 import { ExtractorLoadRequest } from '../App';
-import { AlertCircle, RefreshCw, FileText, FileCode, ShieldCheck } from 'lucide-react';
+import { AlertCircle, FileText, FileCode, ShieldCheck, Globe } from 'lucide-react';
 import { OriginalityPromptModal } from '../components/originality/OriginalityPromptModal';
+import { SUPPORTED_LANGUAGES, getOcrCode } from '../config/languages';
 
 interface HomeProps {
   loadRequest?: ExtractorLoadRequest | null;
@@ -30,6 +31,7 @@ export const Home: React.FC<HomeProps> = ({
   hasVisitedOriginality,
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('');
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<ExtractionJobStatus | null>(null);
   const [result, setResult] = useState<ExtractionResult | null>(null);
@@ -280,6 +282,7 @@ export const Home: React.FC<HomeProps> = ({
 
   const handleRemoveFile = () => {
     setSelectedFile(null);
+    setSelectedLanguage('');
     setJobId(null);
     setJobStatus(null);
     setResult(null);
@@ -296,12 +299,17 @@ export const Home: React.FC<HomeProps> = ({
 
   const handleStartExtraction = async () => {
     if (!selectedFile) return;
+    if (!selectedLanguage) {
+      setErrorMessage('Please select the document language before extracting text.');
+      return;
+    }
 
     setIsLoading(true);
     setErrorMessage(null);
     setResult(null);
 
     const isDocx = selectedFile.name.toLowerCase().endsWith('.docx');
+    const ocrCode = getOcrCode(selectedLanguage);
 
     // Immediately display responsive progress UI
     setJobStatus({
@@ -329,8 +337,8 @@ export const Home: React.FC<HomeProps> = ({
           : 'Parsing document structure & pages...',
       }));
 
-      // 2. Start Extract
-      await startExtraction(uploadRes.job_id);
+      // 2. Start Extract — pass the selected OCR language code
+      await startExtraction(uploadRes.job_id, ocrCode);
     } catch (err: any) {
       setIsLoading(false);
       setErrorMessage(err.message || 'Failed to start document extraction.');
@@ -347,6 +355,7 @@ export const Home: React.FC<HomeProps> = ({
     // If we have an existing jobId from backend, re-trigger extraction on it directly
     const currentJobId = jobId || result?.job_id;
     if (currentJobId && !currentJobId.startsWith('imported_')) {
+      const ocrCode = selectedLanguage ? getOcrCode(selectedLanguage) : 'en';
       setIsLoading(true);
       setErrorMessage(null);
       setResult(null);
@@ -360,7 +369,7 @@ export const Home: React.FC<HomeProps> = ({
         stage_message: 'Hard reloading: Re-extracting document layout & text...',
       });
       try {
-        await startExtraction(currentJobId);
+        await startExtraction(currentJobId, ocrCode);
       } catch (err: any) {
         setIsLoading(false);
         setErrorMessage(err.message || 'Failed to re-extract document.');
@@ -524,6 +533,8 @@ export const Home: React.FC<HomeProps> = ({
               selectedFile={selectedFile}
               onRemoveFile={handleRemoveFile}
               isLoading={isLoading}
+              selectedLanguage={selectedLanguage}
+              onLanguageChange={setSelectedLanguage}
             />
 
             {isLoading && jobStatus && (
@@ -550,6 +561,16 @@ export const Home: React.FC<HomeProps> = ({
                   <span className="px-2 py-0.5 rounded-full text-xs bg-indigo-500/20 text-indigo-300 uppercase font-semibold">
                     {result.file_type}
                   </span>
+                  {(result.document_language || selectedLanguage) && (
+                    <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-500/20 text-emerald-300 font-semibold flex items-center space-x-1">
+                      <Globe className="w-3 h-3" />
+                      <span>
+                        {SUPPORTED_LANGUAGES.find(
+                          (l) => l.ocrCode === (result.document_language || getOcrCode(selectedLanguage))
+                        )?.label || result.document_language || selectedLanguage}
+                      </span>
+                    </span>
+                  )}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">Extraction completed successfully.</p>
               </div>

@@ -22,8 +22,9 @@ class ExtractionService:
         self.pdf_extractor = PDFExtractor(ocr_engine=self.paddle_ocr, structure_engine=self.pp_structure)
         self.docx_extractor = DOCXExtractor(ocr_engine=self.paddle_ocr, structure_engine=self.pp_structure)
 
-    def process_document(self, job_id: str, file_path: str, filename: str, file_type: str):
+    def process_document(self, job_id: str, file_path: str, filename: str, file_type: str, language: str = "en"):
         try:
+            self.paddle_ocr.set_language(language)
             def on_progress(
                 stage: str,
                 progress: int,
@@ -100,6 +101,7 @@ class ExtractionService:
                 job_id=job_id,
                 filename=filename,
                 file_type=file_type,
+                document_language=language,
                 is_tagged_document=res.get("is_tagged_document", False),
                 tagging_summary=res.get("tagging_summary"),
                 pages=pages,

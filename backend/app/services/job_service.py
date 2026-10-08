@@ -25,6 +25,14 @@ class JobService:
         self._persist_status(job_id, status)
         return status
 
+    def set_job_language(self, job_id: str, language: str):
+        """Store the resolved OCR language on the job so it can be reflected in the result."""
+        if job_id not in self._jobs:
+            self._load_status_from_disk(job_id)
+        if job_id in self._jobs:
+            self._jobs[job_id].document_language = language
+            self._persist_status(job_id, self._jobs[job_id])
+
     def update_job_status(
         self,
         job_id: str,

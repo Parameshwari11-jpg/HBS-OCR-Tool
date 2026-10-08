@@ -19,11 +19,11 @@ export async function uploadFile(file: File): Promise<{ job_id: string; filename
   return res.json();
 }
 
-export async function startExtraction(job_id: string): Promise<{ job_id: string; status: string }> {
+export async function startExtraction(job_id: string, language: string = 'en'): Promise<{ job_id: string; status: string }> {
   const res = await fetch(`${API_BASE}/api/extract`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id }),
+    body: JSON.stringify({ job_id, language }),
   });
 
   if (!res.ok) {
@@ -33,6 +33,7 @@ export async function startExtraction(job_id: string): Promise<{ job_id: string;
 
   return res.json();
 }
+
 
 export async function getJobStatus(job_id: string): Promise<ExtractionJobStatus> {
   const res = await fetch(`${API_BASE}/api/status/${job_id}`);
