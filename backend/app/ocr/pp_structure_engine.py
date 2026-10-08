@@ -17,17 +17,41 @@ class PPStructureEngine:
         if self._initialized:
             return
         try:
-            from paddleocr import PPStructure
-            self._engine = PPStructure(
-                show_log=False,
-                image_orientation=False,
-                use_gpu=self.use_gpu,
-                lang=self.lang,
-                layout=True,
-                table=False
-            )
+            try:
+                from paddleocr import PPStructure
+            except ImportError:
+                try:
+                    from paddleocr.ppstructure.predict_system import PPStructure
+                except ImportError:
+                    PPStructure = None
+
+            if PPStructure is None:
+                logger.warning("PPStructure class not available in installed paddleocr version. Document layout will rely on Visual Layout Detector.")
+                self._engine = None
+                self._initialized = True
+                return
+
+            engine_instance = None
+            configs = [
+                {"lang": self.lang, "layout": True, "table": False},
+                {"lang": self.lang},
+                {"show_log": False, "image_orientation": False, "use_gpu": self.use_gpu, "lang": self.lang, "layout": True, "table": False},
+                {}
+            ]
+
+            for cfg in configs:
+                try:
+                    engine_instance = PPStructure(**cfg)
+                    break
+                except Exception:
+                    continue
+
+            self._engine = engine_instance
             self._initialized = True
-            logger.info("PPStructure engine initialized successfully.")
+            if self._engine is not None:
+                logger.info("PPStructure engine initialized successfully.")
+            else:
+                logger.warning("PPStructure could not be initialized with compatible arguments. Relying on Visual Layout Detector.")
         except Exception as e:
             logger.warning(f"PPStructure failed to initialize: {e}. Will handle gracefully.")
             self._engine = None

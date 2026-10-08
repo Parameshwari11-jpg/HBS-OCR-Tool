@@ -33,14 +33,30 @@ class PaddleOCREngine:
             
             from paddleocr import PaddleOCR
             
-            self._ocr = PaddleOCR(
-                use_angle_cls=self.use_angle_cls,
-                lang=self.lang,
-                show_log=False,
-                use_gpu=self.use_gpu
-            )
-            self._initialized = True
-            logger.info("PaddleOCR engine initialized successfully.")
+            ocr_instance = None
+            # Attempt initialization with fallbacks across different PaddleOCR versions (v2 / v3 / pipelines)
+            configs_to_try = [
+                {"use_angle_cls": self.use_angle_cls, "lang": self.lang},
+                {"lang": self.lang},
+                {"use_angle_cls": self.use_angle_cls, "lang": self.lang, "show_log": False, "use_gpu": self.use_gpu},
+                {}
+            ]
+            
+            last_err = None
+            for cfg in configs_to_try:
+                try:
+                    ocr_instance = PaddleOCR(**cfg)
+                    break
+                except Exception as ex:
+                    last_err = ex
+                    continue
+
+            if ocr_instance is not None:
+                self._ocr = ocr_instance
+                self._initialized = True
+                logger.info("PaddleOCR engine initialized successfully.")
+            else:
+                raise last_err or RuntimeError("Failed to initialize PaddleOCR with any configuration")
         except Exception as e:
             logger.error(f"PaddleOCR failed to initialize. Root cause: {e}", exc_info=True)
             self._ocr = None
