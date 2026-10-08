@@ -62,6 +62,107 @@ class PaddleOCREngine:
             self._ocr = None
             self._initialized = True
 
+    def _safe_ocr_call(self, img_input: Any):
+        """
+        Executes OCR safely across PaddleOCR 2.x and PaddleOCR 3.x / PaddleX pipelines.
+        """
+        if self._ocr is None:
+            return None
+        # PaddleOCR 3.x / PaddleX pipeline predict() does not accept cls parameter
+        try:
+            return self._ocr.ocr(img_input)
+        except TypeError:
+            try:
+                return self._ocr.ocr(img_input, cls=self.use_angle_cls)
+            except Exception as e:
+                logger.warning(f"Fallback OCR call error: {e}")
+                return None
+        except Exception as e:
+            logger.warning(f"OCR call error: {e}")
+            return None
+
+    def _extract_raw_candidates(self, ocr_res: Any) -> List[Dict[str, Any]]:
+        """
+        Extracts raw candidates from OCR response across multiple PaddleOCR formats:
+        1. Classic PaddleOCR 2.x list: [ [ [ [pts], (text, conf) ], ... ] ]
+        2. PaddleOCR 3.x / PaddleX Pipeline results: list of dicts/objects with dt_polys/rec_texts
+        """
+        raw_candidates = []
+        if not ocr_res:
+            return raw_candidates
+
+        # Case 1: Classic PaddleOCR 2.x format
+        if isinstance(ocr_res, list) and len(ocr_res) > 0 and isinstance(ocr_res[0], list):
+            for idx, line in enumerate(ocr_res[0]):
+                if not line or len(line) < 2:
+                    continue
+                bbox_points, text_info = line[0], line[1]
+                if isinstance(text_info, (tuple, list)) and len(text_info) >= 2:
+                    text, confidence = text_info[0], text_info[1]
+                elif isinstance(text_info, str):
+                    text, confidence = text_info, 0.95
+                else:
+                    continue
+
+                if isinstance(bbox_points, (list, tuple, np.ndarray)) and len(bbox_points) >= 4:
+                    xs = [pt[0] for pt in bbox_points]
+                    ys = [pt[1] for pt in bbox_points]
+                    bbox = [float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))]
+                else:
+                    continue
+
+                conf_val = float(confidence) if confidence is not None else 0.9
+                raw_candidates.append({
+                    "orig_idx": idx + 1,
+                    "text": str(text),
+                    "bbox": bbox,
+                    "confidence": conf_val
+                })
+            if raw_candidates:
+                return raw_candidates
+
+        # Case 2: PaddleOCR 3.x / PaddleX pipeline dictionary or object format
+        res_list = ocr_res if isinstance(ocr_res, list) else [ocr_res]
+        for page_res in res_list:
+            res_dict = {}
+            if isinstance(page_res, dict):
+                res_dict = page_res
+            elif hasattr(page_res, "json") and isinstance(page_res.json, dict):
+                res_dict = page_res.json
+            elif hasattr(page_res, "__dict__"):
+                res_dict = page_res.__dict__
+
+            polys = res_dict.get("dt_polys") or res_dict.get("dt_boxes") or res_dict.get("boxes") or res_dict.get("points")
+            texts = res_dict.get("rec_texts") or res_dict.get("rec_text") or res_dict.get("texts") or res_dict.get("txts")
+            scores = res_dict.get("rec_scores") or res_dict.get("rec_score") or res_dict.get("scores")
+
+            if polys is not None and texts is not None:
+                if isinstance(texts, str):
+                    texts = [texts]
+                if scores is not None and isinstance(scores, (int, float)):
+                    scores = [scores] * len(texts)
+
+                for idx, (poly, txt) in enumerate(zip(polys, texts)):
+                    score = scores[idx] if (scores is not None and idx < len(scores)) else 0.9
+                    poly_np = np.array(poly)
+                    if poly_np.ndim == 1 and len(poly_np) == 4:
+                        bbox = [float(poly_np[0]), float(poly_np[1]), float(poly_np[2]), float(poly_np[3])]
+                    elif poly_np.ndim == 2 and len(poly_np) >= 4:
+                        xs = poly_np[:, 0]
+                        ys = poly_np[:, 1]
+                        bbox = [float(np.min(xs)), float(np.min(ys)), float(np.max(xs)), float(np.max(ys))]
+                    else:
+                        continue
+
+                    raw_candidates.append({
+                        "orig_idx": len(raw_candidates) + 1,
+                        "text": str(txt),
+                        "bbox": bbox,
+                        "confidence": float(score)
+                    })
+
+        return raw_candidates
+
     def run_ocr(self, image_input: Any, page_num: int = 1) -> List[Dict[str, Any]]:
         """
         Runs PaddleOCR on an image (filepath, PIL Image, or numpy array).
@@ -82,27 +183,15 @@ class PaddleOCREngine:
             else:
                 img_np = image_input
 
-            ocr_res = self._ocr.ocr(img_np, cls=self.use_angle_cls)
+            ocr_res = self._safe_ocr_call(img_np)
             
-            if not ocr_res or len(ocr_res) == 0 or ocr_res[0] is None:
+            if not ocr_res:
                 return results
 
             # Step 1: Pre-process OCR lines to detect and merge superscript TM / ™ / M
-            raw_candidates = []
-            for idx, line in enumerate(ocr_res[0]):
-                if not line or len(line) < 2:
-                    continue
-                bbox_points, (text, confidence) = line[0], line[1]
-                xs = [pt[0] for pt in bbox_points]
-                ys = [pt[1] for pt in bbox_points]
-                bbox = [float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))]
-                conf_val = float(confidence) if confidence is not None else None
-                raw_candidates.append({
-                    "orig_idx": idx + 1,
-                    "text": text,
-                    "bbox": bbox,
-                    "confidence": conf_val
-                })
+            raw_candidates = self._extract_raw_candidates(ocr_res)
+            if not raw_candidates:
+                return results
 
             # Check for isolated superscript trademark glyphs (e.g. 'M', 'TM', '™') near top-right of main words
             merged_candidates = []
@@ -209,16 +298,20 @@ class PaddleOCREngine:
                         crop = cv_img[by + box_margin : by + bh_b - box_margin, bx + box_margin : bx + bw_b - box_margin]
                         if crop.shape[0] < 15 or crop.shape[1] < 30:
                             continue
-                        c_ocr = self._ocr.ocr(crop, cls=False)
-                        if not c_ocr or not c_ocr[0]:
+                        c_ocr = self._safe_ocr_call(crop)
+                        if not c_ocr:
                             continue
-                        for c_line in c_ocr[0]:
-                            if not c_line or len(c_line) < 2:
-                                continue
-                            c_pts, (c_txt, c_conf) = c_line[0], c_line[1]
-                            c_xs = [p[0] + bx + box_margin for p in c_pts]
-                            c_ys = [p[1] + by + box_margin for p in c_pts]
-                            c_bbox = [float(min(c_xs)), float(min(c_ys)), float(max(c_xs)), float(max(c_ys))]
+                        c_cands = self._extract_raw_candidates(c_ocr)
+                        for c_item in c_cands:
+                            c_txt = c_item.get("text", "")
+                            c_conf = c_item.get("confidence", 0.9)
+                            c_box = c_item.get("bbox", [0, 0, 0, 0])
+                            c_bbox = [
+                                float(c_box[0] + bx + box_margin),
+                                float(c_box[1] + by + box_margin),
+                                float(c_box[2] + bx + box_margin),
+                                float(c_box[3] + by + box_margin)
+                            ]
                             box_recovered_items.append((c_bbox, c_txt, float(c_conf)))
 
                     # Merge recovered box lines into candidates

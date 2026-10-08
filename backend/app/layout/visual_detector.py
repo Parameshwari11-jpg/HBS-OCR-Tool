@@ -410,13 +410,13 @@ def detect_visual_elements_from_page_image(
     if circles is not None:
         circles = np.uint16(np.around(circles))
         for c in circles[0, :]:
-            cx, cy, cr = c
+            cx, cy, cr = int(c[0]), int(c[1]), int(c[2])
             roi = gray_icon[max(0, cy-cr):min(h, cy+cr), max(0, cx-cr):min(w, cx+cr)]
             if roi.size > 0 and roi.std() > 25.0:
-                bx0 = round((cx - cr) * scale_px_to_pt, 2)
-                by0 = round((cy - cr) * scale_px_to_pt, 2)
-                bx1 = round((cx + cr) * scale_px_to_pt, 2)
-                by1 = round((cy + cr) * scale_px_to_pt, 2)
+                bx0 = round(float(cx - cr) * scale_px_to_pt, 2)
+                by0 = round(float(cy - cr) * scale_px_to_pt, 2)
+                bx1 = round(float(cx + cr) * scale_px_to_pt, 2)
+                by1 = round(float(cy + cr) * scale_px_to_pt, 2)
                 elements.append({
                     "type": "figure",
                     "subtype": "icon",
