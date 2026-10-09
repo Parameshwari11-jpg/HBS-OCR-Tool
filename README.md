@@ -177,8 +177,9 @@ If you prefer separate terminal windows:
 
 Run unit tests for PDF extraction, DOCX parsing, overlap detection, and duplicate classification:
 
-```bash
-.\venv\Scripts\python -m unittest discover -s tests
+```cmd
+cd backend
+..\venv\Scripts\python -m unittest discover -s tests
 ```
 
 ---

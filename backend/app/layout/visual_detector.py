@@ -43,11 +43,6 @@ def detect_visual_elements_from_page_image(
     text_mask = np.zeros((h, w), dtype=np.uint8)
     for b in known_text_bboxes:
         if len(b) >= 4:
-            bw = b[2] - b[0]
-            bh = b[3] - b[1]
-            if bh > 0.45 * ph and bw > 0.30 * pw:
-                # Column-spanning or page-spanning text region artifact — skip masking photos
-                continue
             x0 = max(0, int(b[0] * scale_pt_to_px) - 2)
             y0 = max(0, int(b[1] * scale_pt_to_px) - 2)
             x1 = min(w, int(b[2] * scale_pt_to_px) + 2)
@@ -182,7 +177,7 @@ def detect_visual_elements_from_page_image(
 
     # Detect standing full-length human figures isolated against light backgrounds
     # Sever vertical bridging across detected gutters so standing figures (e.g. woman in dress) are isolated
-    non_white_page = ((gray < 240) & (spine_mask == 0)).astype(np.uint8) * 255
+    non_white_page = ((gray < 240) & (spine_mask == 0) & (text_mask == 0)).astype(np.uint8) * 255
     for g_px in page_gutters_px:
         non_white_page[:, max(0, g_px-2):min(w, g_px+3)] = 0
 
@@ -209,6 +204,7 @@ def detect_visual_elements_from_page_image(
     # (e.g. tilted funicular cable car photo bordered by a tilted white paper border)
     edges_all = cv2.Canny(gray, 25, 80)
     edges_all[spine_mask > 0] = 0
+    edges_all[text_mask > 0] = 0
     tilted_cnts, _ = cv2.findContours(edges_all, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     for tc in tilted_cnts:
         tx, ty, tw_px, th_px = cv2.boundingRect(tc)
@@ -300,6 +296,7 @@ def detect_visual_elements_from_page_image(
     # Yellow / tinted container box detection
     yellow_mask = (hsv[:, :, 0] >= 18) & (hsv[:, :, 0] <= 45) & (hsv[:, :, 1] >= 12) & (hsv[:, :, 2] >= 170)
     yellow_mask[spine_mask > 0] = 0
+    yellow_mask[text_mask > 0] = 0
     yellow_closed = cv2.morphologyEx(yellow_mask.astype(np.uint8)*255, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15)))
     yellow_bridged = cv2.morphologyEx(yellow_closed, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (1, int(40 * scale_pt_to_px))))
     y_cnts, _ = cv2.findContours(yellow_bridged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

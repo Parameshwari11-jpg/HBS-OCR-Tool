@@ -15,6 +15,8 @@ from app.layout.tag_classifier import TagClassifier
 from app.utils.normalization import is_ui_artifact, clean_ocr_text
 from app.ocr.fraction_assembler import assemble_vertical_fractions
 
+from app.extractors.pdf_struct_tree_parser import parse_pdf_struct_tree
+
 logger = logging.getLogger("pdf_extractor")
 
 def is_pdf_tagged(doc: fitz.Document) -> bool:
@@ -69,6 +71,7 @@ class PDFExtractor:
         job_id = os.path.basename(temp_dir)
         doc = fitz.open(pdf_path)
         doc_is_tagged = is_pdf_tagged(doc)
+        page_struct_nodes = parse_pdf_struct_tree(doc) if doc_is_tagged else {}
         pages_data: List[PageData] = []
         stats = ExtractionStatistics()
         total_pages = len(doc)
@@ -164,10 +167,73 @@ class PDFExtractor:
                     sub_blocks.append(new_b)
                 return sub_blocks
 
+            def split_block_by_heading_and_style(b: Dict[str, Any], median_size: float) -> List[Dict[str, Any]]:
+                lines = b.get("lines", [])
+                if not lines or len(lines) <= 1:
+                    return [b]
+
+                sub_groups = []
+                current_group = []
+
+                for l in lines:
+                    l_spans = l.get("spans", [])
+                    l_text = "".join(s.get("text", "") for s in l_spans).strip()
+                    if not l_text:
+                        continue
+
+                    is_heading_pattern = bool(
+                        TagClassifier.SECTION_HEADING_REGEX.match(l_text) or
+                        TagClassifier.NUMBERED_HEADING_REGEX.match(l_text) or
+                        TagClassifier.CAPTION_REGEX.match(l_text)
+                    )
+
+                    line_max_size = max((float(s.get("size", 10.0)) for s in l_spans), default=10.0)
+                    line_is_bold = any(bool((int(s.get("flags", 0)) & 16) or 'bold' in s.get("font", "").lower() or 'black' in s.get("font", "").lower()) for s in l_spans)
+
+                    is_distinct_heading = is_heading_pattern or (line_max_size >= median_size * 1.25) or (line_is_bold and len(l_text.split()) <= 12 and line_max_size >= median_size * 1.1)
+
+                    if current_group:
+                        prev_spans = [s for l_prev in current_group for s in l_prev.get("spans", [])]
+                        prev_text = "".join(s.get("text", "") for s in prev_spans).strip()
+                        prev_is_heading = bool(
+                            TagClassifier.SECTION_HEADING_REGEX.match(prev_text) or
+                            TagClassifier.NUMBERED_HEADING_REGEX.match(prev_text) or
+                            TagClassifier.CAPTION_REGEX.match(prev_text)
+                        )
+                        prev_max_size = max((float(s.get("size", 10.0)) for s in prev_spans), default=10.0)
+
+                        if is_distinct_heading or prev_is_heading or abs(line_max_size - prev_max_size) >= 2.5:
+                            sub_groups.append(current_group)
+                            current_group = [l]
+                        else:
+                            current_group.append(l)
+                    else:
+                        current_group.append(l)
+
+                if current_group:
+                    sub_groups.append(current_group)
+
+                if len(sub_groups) <= 1:
+                    return [b]
+
+                res_blocks = []
+                for g in sub_groups:
+                    new_b = dict(b)
+                    new_b["lines"] = g
+                    new_b["bbox"] = (
+                        min(l["bbox"][0] for l in g),
+                        min(l["bbox"][1] for l in g),
+                        max(l["bbox"][2] for l in g),
+                        max(l["bbox"][3] for l in g),
+                    )
+                    res_blocks.append(new_b)
+                return res_blocks
+
             raw_valid_blocks = [b for b in blocks if b.get("type") == 0]
             valid_blocks = []
             for rb in raw_valid_blocks:
-                valid_blocks.extend(split_block_into_column_subblocks(rb))
+                for col_sub in split_block_into_column_subblocks(rb):
+                    valid_blocks.extend(split_block_by_heading_and_style(col_sub, median_body_size))
             clusters = []
             assigned = set()
 
@@ -220,6 +286,8 @@ class PDFExtractor:
                 span_colors = []
                 span_bolds = []
                 span_italics = []
+                span_struct_tags = []
+                span_alt_texts = []
 
                 for b in cl:
                     for line in b.get("lines", []):
@@ -238,6 +306,14 @@ class PDFExtractor:
                                 is_i = bool((s_flags & 2) or ('italic' in s_font.lower()) or ('oblique' in s_font.lower()))
                                 span_bolds.append(is_b)
                                 span_italics.append(is_i)
+
+                                s_mcid = s.get("mcid")
+                                if s_mcid is not None and (page_num, s_mcid) in mcid_map:
+                                    st_info = mcid_map[(page_num, s_mcid)]
+                                    if st_info.get("tag"):
+                                        span_struct_tags.append(st_info["tag"])
+                                    if st_info.get("alt"):
+                                        span_alt_texts.append(st_info["alt"])
 
                 # Check if this cluster contains fraction bars
                 cl_bars = []
@@ -400,6 +476,24 @@ class PDFExtractor:
                     underline=False
                 )
 
+                cur_page_nodes = page_struct_nodes.get(page_num, [])
+                matched_node = None
+                clean_t_words = set(text_clean.lower().split())
+                for node in cur_page_nodes:
+                    alt_text = node.get("alt")
+                    if alt_text:
+                        alt_words = set(alt_text.lower().split())
+                        overlap = len(alt_words.intersection(clean_t_words))
+                        if overlap >= 2 or (len(alt_words) <= 3 and overlap >= 1):
+                            matched_node = node
+                            break
+
+                native_struct_tag = matched_node["tag"] if matched_node else (max(set(span_struct_tags), key=span_struct_tags.count) if span_struct_tags else None)
+                native_alt_text = matched_node["alt"] if matched_node else (" ".join(dict.fromkeys(span_alt_texts)) if span_alt_texts else None)
+
+                if native_alt_text and ('?' in text_clean or len(text_clean.strip()) < len(native_alt_text.strip())):
+                    text_clean = native_alt_text
+
                 classification = TagClassifier.classify_element(
                     text=text_clean,
                     bbox=bbox,
@@ -408,7 +502,9 @@ class PDFExtractor:
                     page_height=page_height,
                     median_body_size=median_body_size,
                     doc_is_tagged=doc_is_tagged,
-                    source="native"
+                    source="native",
+                    native_struct_tag=native_struct_tag,
+                    native_alt_text=native_alt_text
                 )
 
                 c_type = classification["content_type"]
@@ -964,6 +1060,9 @@ class PDFExtractor:
             ))
 
         doc.close()
+
+        # Enforce single H1 tag per file (accessibility & heading hierarchy compliance)
+        pages_data = TagClassifier.enforce_single_h1_per_file(pages_data)
 
         all_extracted_elements = [elem for p in pages_data for elem in p.elements]
 

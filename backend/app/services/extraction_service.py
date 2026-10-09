@@ -11,6 +11,7 @@ from app.ocr.paddle_ocr_engine import PaddleOCREngine
 from app.ocr.pp_structure_engine import PPStructureEngine
 from app.utils.file_utils import get_job_temp_dir
 from app.utils.normalization import is_ui_artifact, clean_ocr_text
+from app.layout.tag_classifier import TagClassifier
 
 logger = logging.getLogger("extraction_service")
 
@@ -53,6 +54,7 @@ class ExtractionService:
                 raise ValueError(f"Unsupported file type: {file_type}")
 
             pages: list[PageData] = res["pages"]
+            pages = TagClassifier.enforce_single_h1_per_file(pages)
             total_pages_count = len(pages)
             on_progress("finalizing", 94, total_pages_count, total_pages_count, "Structuring reading order and assembling text content...")
 

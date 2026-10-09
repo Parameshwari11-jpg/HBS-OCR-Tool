@@ -18,7 +18,7 @@ class TagClassifier:
         re.IGNORECASE
     )
     SECTION_HEADING_REGEX = re.compile(
-        r'^(Chapter|Section|Part|Unit|Module)\s+(\d+|[IVXLCDM]+)[:\.\s]?',
+        r'^(Chapter|Section|Part|Unit|Module|Chapitre|Leçon|Exercice|Unité|Bilan|Vocabulaire|Grammaire)\s+(\d+|[IVXLCDM]+)[:\.\s]?',
         re.IGNORECASE
     )
     NUMBERED_HEADING_REGEX = re.compile(
@@ -45,7 +45,7 @@ class TagClassifier:
             return False
 
         # Math operator Unicode symbols
-        math_chars = set('∀∁∂∃∄∅∆∇∈∉∊∋∌∍∎∏∐∑−∓∔∕∖∗∘∙√∛∜∝∞∟∠∡∢∣∤∥∦∧∨∩∪∫∬∭∮∯∰∱∲∳∴∵∶∷∸∹∺∻∼∽∾∿≀≁≂≃≄≅≆≇≈≉≊≋≌≍≎≏≐≑≒≓≔≕≖≗≘≙≚≜≝≞≟≠≡≢≣≤≥≦≧≨≩≪≫≬≭≮≯≰≱≲≳≴≵≶≷≸≹≺≻≼≽≾≿⊀⊁⊂⊃⊄⊅⊆⊇⊈⊉⊊⊋⊌⊍⊎⊏⊐⊑⊒⊓⊔⊕⊖⊗⊘⊙⊚⊛⊜⊝⊞⊟⊠⊡⊢⊣⊤⊥⊦⊧⊨⊩⊪⊫⊬⊭⊮⊯⊰⊱⊲⊳⊴⊵⊶⊷⊸⊹⊺⊻⊼⊽⊾⊿⋅⋆✕✖✚±×÷')
+        math_chars = set('∀∁∂∃∄∅∆∇∈∉∊∋∌∍∎∏∐∑−∓∔∕∖∗∘∙√∛∜∝∞∟∠∡∢∣∤∥∦∧∨∩∪∫∬∭∮∯∰∱∲∳∴∵∶∷∸∹∺∻∼∽∾∿≀≁≂≃≄≅≆≇≈≉≊≋≌≍≎≏≐≑≒≓≔≕≖≗≘≙≚≜≝≞≟≠≡≢≣≤≥≦≧≨≩≪≫≬≭≮≯≰≱≲≳≴≵≶≷≸≹≺≻≼≽≾≿⊀⊁⊂⊃⊈⊉⊊⊋⊌⊍⊎⊏⊐⊑⊒⊓⊔⊕⊖⊗⊘⊙⊚⊛⊜⊝⊞⊟⊠⊡⊢⊣⊤⊥⊦⊧⊨⊩⊪⊫⊬⊭⊮⊯⊰⊱⊲⊳⊴⊵⊶⊷⊸⊹⊺⊻⊼⊽⊾⊿⋅⋆✕✖✚±×÷')
         if any(c in math_chars for c in t):
             return True
         # Equation pattern like a = b + c or f(x) = y
@@ -85,7 +85,9 @@ class TagClassifier:
         source: str = "native",
         table_rows: Optional[List[List[str]]] = None,
         table_headers: Optional[List[str]] = None,
-        image_meta: Optional[Dict[str, Any]] = None
+        image_meta: Optional[Dict[str, Any]] = None,
+        native_struct_tag: Optional[str] = None,
+        native_alt_text: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Classifies an element and builds its content_type, tag, is_tagged, tag_source, and parameters.
@@ -101,7 +103,57 @@ class TagClassifier:
         is_italic = bool(getattr(font_info, "italic", False)) if font_info else False
         font_color = getattr(font_info, "color", None) if font_info else None
 
-        effective_size = font_size if font_size > 0 else median_body_size
+        # Estimate font height ratio from bounding box if font_size is unavailable (e.g. OCR)
+        bbox_height_font_size = 0.0
+        if bbox and len(bbox) == 4:
+            box_h = abs(float(bbox[3]) - float(bbox[1]))
+            if box_h > 0:
+                bbox_height_font_size = box_h / max(1, line_count)
+
+        if font_size > 0:
+            effective_size = font_size
+        elif bbox_height_font_size > 0:
+            effective_size = bbox_height_font_size
+        else:
+            effective_size = median_body_size
+
+        # 0. NATIVE PDF STRUCT_TREE TAG (Direct 1-to-1 Mapping from Tagged PDF StructTree)
+        if native_struct_tag:
+            norm_nst = native_struct_tag.strip().upper()
+            tag_name = native_struct_tag.strip()
+            ctype = "paragraph"
+            if norm_nst in ("H1", "HEADING1"):
+                ctype, tag_name = "heading_1", "H1"
+            elif norm_nst in ("H2", "HEADING2"):
+                ctype, tag_name = "heading_2", "H2"
+            elif norm_nst in ("H3", "HEADING3"):
+                ctype, tag_name = "heading_3", "H3"
+            elif norm_nst in ("FORMULA", "MATH"):
+                ctype, tag_name = "formula", "Formula"
+            elif norm_nst in ("LI", "LBL", "LBODY", "L"):
+                ctype, tag_name = "list_item", "LI"
+            elif norm_nst == "TABLE":
+                ctype, tag_name = "table", "Table"
+            elif norm_nst == "CAPTION":
+                ctype, tag_name = "caption", "Caption"
+
+            return {
+                "content_type": ctype,
+                "tag": tag_name,
+                "is_tagged": True,
+                "tag_source": "pdf_struct_tree",
+                "parameters": {
+                    "content_type": ctype,
+                    "tag": tag_name,
+                    "is_tagged": True,
+                    "tag_source": "pdf_struct_tree",
+                    "native_struct_tag": native_struct_tag,
+                    "alt_text": native_alt_text,
+                    "word_count": word_count,
+                    "character_count": char_count,
+                    "bbox": bbox
+                }
+            }
 
         # 1. TABLE Content Type
         if is_table or (table_rows is not None and len(table_rows) > 0):
@@ -587,3 +639,29 @@ class TagClassifier:
             content_types=content_types,
             tag_sources=tag_sources
         )
+
+    @classmethod
+    def enforce_single_h1_per_file(cls, pages: List[Any]) -> List[Any]:
+        """
+        Enforces accessibility standard: a single document/file MUST have only ONE H1 tag.
+        The first H1 encountered in the file remains H1 (heading_1, level 1).
+        Any subsequent H1 elements in the document are demoted to H2 (heading_2, level 2).
+        """
+        h1_found = False
+        for p in pages:
+            elements = getattr(p, "elements", []) if hasattr(p, "elements") else (p if isinstance(p, list) else [])
+            for elem in elements:
+                tag = getattr(elem, "tag", None)
+                content_type = getattr(elem, "content_type", None)
+                if tag == "H1" or content_type == "heading_1":
+                    if not h1_found:
+                        h1_found = True
+                    else:
+                        elem.tag = "H2"
+                        elem.content_type = "heading_2"
+                        if hasattr(elem, "parameters") and isinstance(elem.parameters, dict):
+                            elem.parameters["tag"] = "H2"
+                            elem.parameters["content_type"] = "heading_2"
+                            elem.parameters["level"] = 2
+        return pages
+
